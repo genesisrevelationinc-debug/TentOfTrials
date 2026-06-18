@@ -1,1 +1,1 @@
-"""Shared tooling utilities for the TentOfTrials platform."""
+"""Shared utilities and tooling scripts for the TentOfTrials platform."""
