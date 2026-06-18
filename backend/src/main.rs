@@ -73,4 +73,23 @@ async fn main() -> Result<()> {
 
     tracing::info!("shutdown complete");
     Ok(())
+mod middleware;
+
+use axum::{Router, routing::get};
+use std::net::SocketAddr;
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
+
+    let app = Router::new()
+        .route("/", get(|| async { "Hello, World!" }))
+        .layer(middleware::request_id::request_id_layer());
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    tracing::info!("Server listening on {}", addr);
+
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
 }
