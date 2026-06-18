@@ -1,1 +1,1 @@
-"""Documentation utilities and generators for TentOfTrials."""
+"""Documentation source files and generated documentation artifacts."""
