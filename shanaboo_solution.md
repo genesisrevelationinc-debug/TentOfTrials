@@ -7,109 +7,112 @@
 +use std::net::SocketAddr;
 +use std::str::FromStr;
 +
-+/// Error type for configuration loading failures.
++/// Configuration for the TentOfTrials backend.
++///
++/// Loaded from environment variables with safe defaults for local development.
++#[derive(Debug, Clone, PartialEq)]
++pub struct Config {
++    /// Host address to bind to
++    pub host: String,
++    /// Port to listen on
++    pub port: u16,
++    /// Log level (e.g., "info", "debug", "warn", "error")
++    pub log_level: String,
++    /// Enable experimental features
++    pub enable_experimental: bool,
++}
++
++/// Errors that can occur when loading configuration.
 +#[derive(Debug, PartialEq)]
 +pub enum ConfigError {
 +    InvalidPort(String),
-+    InvalidBoolean {
-+        var: String,
-+        value: String,
-+    },
-+    InvalidHost(String),
-+    InvalidLogLevel(String),
++    InvalidBoolean(String),
++    MissingValue(String),
 +}
 +
 +impl fmt::Display for ConfigError {
 +    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 +        match self {
-+            ConfigError::InvalidPort(v) => write!(f, "invalid port: '{}'", v),
-+            ConfigError::InvalidBoolean { var, value } => {
-+                write!(f, "invalid boolean for {}: '{}'", var, value)
-+            }
-+            ConfigError::InvalidHost(v) => write!(f, "invalid host: '{}'", v),
-+            ConfigError::InvalidLogLevel(v) => write!(f, "invalid log level: '{}'", v),
++            ConfigError::InvalidPort(val) => write!(f, "invalid port '{}': must be a number between 1 and 65535", val),
++            ConfigError::InvalidBoolean(val) => write!(f, "invalid boolean '{}': expected 'true' or 'false'", val),
++            ConfigError::MissingValue(var) => write!(f, "missing required value for {}", var),
 +        }
 +    }
 +}
 +
 +impl std::error::Error for ConfigError {}
 +
-+/// Typed configuration for the backend service.
-+///
-+/// Environment variables:
-+/// - `TOT_BACKEND_HOST` - Bind address (default: "127.0.0.1")
-+/// - `TOT_BACKEND_PORT` - Bind port (default: "8080")
-+/// - `TOT_LOG_LEVEL` - Log level: trace, debug, info, warn, error (default: "info")
-+/// - `TOT_ENABLE_EXPERIMENTAL` - Enable experimental features: true/false (default: "false")
-+#[derive(Debug, PartialEq)]
-+pub struct Config {
-+    pub host: String,
-+    pub port: u16,
-+    pub log_level: String,
-+    pub enable_experimental: bool,
-+}
-+
-+impl Default for Config {
-+    fn default() -> Self {
-+        Config {
-+            host: "127.0.0.1".to_string(),
-+            port: 8080,
-+            log_level: "info".to_string(),
-+            enable_experimental: false,
-+        }
-+    }
-+}
-+
 +impl Config {
++    /// Default host for local development.
++    const DEFAULT_HOST: &'static str = "127.0.0.1";
++    /// Default port for local development.
++    const DEFAULT_PORT: u16 = 8080;
++    /// Default log level.
++    const DEFAULT_LOG_LEVEL: &'static str = "info";
++    /// Default experimental features flag.
++    const DEFAULT_ENABLE_EXPERIMENTAL: bool = false;
++
++    /// Environment variable for host.
++    const ENV_HOST: &'static str = "TOT_BACKEND_HOST";
++    /// Environment variable for port.
++    const ENV_PORT: &'static str = "TOT altriT_BACKEND_PORT";
++    /// Environment variable for log level.
++    const ENV_LOG_LEVEL: &'static str = "TOT_LOG_LEVEL";
++    /// Environment variable for experimental features.
++    const ENV_ENABLE_EXPERIMENTAL: &'static str = "TOT_ENABLE_EXPERIMENTAL";
++
 +    /// Load configuration from environment variables with safe defaults.
 +    pub fn from_env() -> Result<Self, ConfigError> {
-+        let mut config = Config::default();
++        let host = env::var(Self::ENV_HOST)
++            .unwrap_or_else(|_| Self::DEFAULT_HOST.to_string());
 +
-+        if let Ok(val) = env::var("TOT_BACKEND_HOST") {
-+            config.host = val;
-+        }
++        let port = if let Ok(port_str) = env::var(Self::ENV_PORT) {
++            if port_str.is_empty() {
++                Self::DEFAULT_PORT
++            } else {
++                port_str
++                    .parse::<u16>()
++                    .map_err(|_| ConfigError::InvalidPort(port_str))?
++            }
++        } else {
++            Self::DEFAULT_PORT
++        };
 +
-+        if let Ok(val) = env::var("TOT_BACKEND_PORT") {
-+            config.port = parse_port(&val)?;
-+        }
++        let log_level = env::var(Self::ENV_LOG_LEVEL)
++            .unwrap_or_else(|_| Self::DEFAULT_LOG_LEVEL.to_string());
 +
-+        if let Ok(val) = env::var("TOT_LOG_LEVEL") {
-+            config.log_level = validate_log_level(&val)?;
-+        }
++        let enable_experimental = if let Ok(val) = env::var(Self::ENV_ENABLE_EXPERIMENTAL) {
++            parse_bool(&val)?
++        } else {
++            Self::DEFAULT_ENABLE_EXPERIMENTAL
++        };
 +
-+        if let Ok(val) = env::var("TOT_ENABLE_EXPERIMENTAL") {
-+            config.enable_experimental = parse_bool(&val, "TOT_ENABLE_EXPERIMENTAL")?;
-+        }
-+
-+        Ok(config)
++        Ok(Config {
++            host,
++            port,
++            log_level,
++            enable_experimental,
++        })
 +    }
 +
-+    /// Return a SocketAddr from the configured host and port.
++    /// Get the socket address for binding.
 +    pub fn socket_addr(&self) -> Result<SocketAddr, std::net::AddrParseError> {
-+        format!("{}:{}", self.host, self.port).parse()
++        let addr_str = format!("{}:{}", self.host, self.port);
++        SocketAddr::from_str(&addr_str)
++    }
++
++    /// Get the socket address string.
++    pub fn bind_address(&self) -> String {
++        format!("{}:{}", self.host, self.port)
 +    }
 +}
 +
-+fn parse_port(s: &str) -> Result<u16, ConfigError> {
-+    s.parse::<u16>()
-+        .map_err(|_| ConfigError::InvalidPort(s.to_string()))
-+}
-+
-+fn parse_bool(s: &str, var: &str) -> Result<bool, ConfigError> {
-+    match s.to_lowercase().as_str() {
-+        "true" | "1" | "yes" => Ok(true),
-+        "false" | "0" | "no" => Ok(false),
-+        _ => Err(ConfigError::InvalidBoolean {
-+            var: var.to_string(),
-+            value: s.to_string(),
-+        }),
-+    }
-+}
-+
-+fn validate_log_level(s: &str) -> Result<String, ConfigError> {
-+    match s.to_lowercase().as_str() {
-+        "trace" | "debug" | "info" | "warn" | "error" => Ok(s.to_lowercase()),
-+        _ => Err(ConfigError::InvalidLogLevel(s.to_string())),
++/// Parse a boolean value from a string.
++fn parse_bool(val: &str) -> Result<bool, ConfigError> {
++    match val.to_lowercase().as_str() {
++        "true" | "1" | "yes" | "on" => Ok(true),
++        "false" | "0" | "no" | "off" => Ok(false),
++        _ => Err(ConfigError::InvalidBoolean(val.to_string())),
 +    }
 +}
 +
@@ -118,8 +121,14 @@
 +    use super::*;
 +
 +    #[test]
-+    fn test_defaults() {
-+        let config = Config::default();
++    fn test_config_defaults() {
++        // Ensure no env vars are set
++        env::remove_var(Config::ENV_HOST);
++        env::remove_var(Config::ENV_PORT);
++        env::remove_var(Config::ENV_LOG_LEVEL);
++        env::remove_var(Config::ENV_ENABLE_EXPERIMENTAL);
++
++        let config = Config::from_env().unwrap();
 +        assert_eq!(config.host, "127.0.0.1");
 +        assert_eq!(config.port, 8080);
 +        assert_eq!(config.log_level, "info");
@@ -127,44 +136,35 @@
 +    }
 +
 +    #[test]
-+    fn test_valid_port() {
-+        assert_eq!(parse_port("8080"), Ok(8080));
-+        assert_eq!(parse_port("1"), Ok(1));
-+        assert_eq!(parse_port("65535"), Ok(65535));
++    fn test_config_valid_overrides() {
++        env::set_var("TOT_BACKEND_HOST", "0.0.0.0");
++        env::set_var("TOT_BACKEND_PORT", "9000");
++        env::set_var("TOT_LOG_LEVEL", "debug");
++        env::set_var("TOT_ENABLE_EXPERIMENTAL", "true");
++
++        let config = Config::from_env().unwrap();
++        assert_eq!(config.host, "0.0.0.0");
++        assert_eq!(config.port, 9000);
++        assert_eq!(config.log_level, "debug");
++        assert_eq!(config.enable_experimental, true);
++
++        // Clean up
++        env::remove_var("TOT_BACKEND_HOST");
++        env::remove_var("TOT_BACKEND_PORT");
++        env::remove_var("TOT_LOG_LEVEL");
++        env::remove_var("TOT_ENABLE_EXPERIMENTAL");
 +    }
 +
 +    #[test]
-+    fn test_invalid_port() {
-+        assert_eq!(parse_port("0"), Ok(0));
-+        assert_eq!(parse_port("65536"), Err(ConfigError::InvalidPort("65536".to_string())));
-+        assert_eq!(parse_port("abc"), Err(ConfigError::InvalidPort("abc".to_string())));
-+        assert_eq!(parse_port(""), Err(ConfigError::InvalidPort("".to_string())));
++    fn test_config_invalid_port() {
++        env::set_var("TOT_BACKEND_PORT", "not_a_port");
++
++        let result = Config::from_env();
++        assert!(matches!(result, Err(ConfigError::InvalidPort(_))));
++
++        env::remove_var("TOT_BACKEND_PORT");
 +    }
 +
 +    #[test]
-+    fn test_valid_bool() {
-+        assert_eq!(parse_bool("true", "VAR"), Ok(true));
-+        assert_eq!(parse_bool("TRUE", "VAR"), Ok(true));
-+        assert_eq!(parse_bool("1", "VAR"), Ok(true));
-+        assert_eq!(parse_bool("yes", "VAR"), Ok(true));
-+        assert_eq!(parse_bool("false", "VAR"), Ok(false));
-+        assert_eq!(parse_bool("FALSE", "VAR"), Ok(false));
-+        assert_eq!(parse_bool("0", "VAR"), Ok(false));
-+        assert_eq!(parse_bool("no", "VAR"), Ok(false));
-+    }
-+
-+    #[test]
-+    fn test_invalid_bool() {
-+        assert_eq!(
-+            parse_bool("maybe", "TOT_ENABLE_EXPERIMENTAL"),
-+            Err(ConfigError::InvalidBoolean {
-+                var: "TOT_ENABLE_EXPERIMENTAL".to_string(),
-+                value: "maybe".to_string(),
-+            })
-+        );
-+    }
-+
-+    #[test]
-+    fn test_valid_log_level() {
-+        assert_eq!(validate_log_level("info"), Ok("info".to_string()));
-+        assert_eq
++    fn test_config_invalid_port_zero() {
++        env::set_var("
