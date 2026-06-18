@@ -1,1 +1,1 @@
-"""Market data and trading engine integration for TentOfTrials."""
+"""Market data services and trading engine connectors written in Go."""
