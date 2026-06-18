@@ -1,1 +1,1 @@
-"""Data models and persistence layer for the TentOfTrials platform."""
+"""Data assets, schemas, and reference datasets for the TentOfTrials platform."""
