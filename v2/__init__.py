@@ -1,1 +1,1 @@
-"""Version 2 API and service definitions for TentOfTrials."""
+"""Version 2 API and service extensions for the TentOfTrials platform."""
