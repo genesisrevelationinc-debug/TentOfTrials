@@ -1,5 +1,23 @@
 # API Reference
 
+## Request ID Propagation
+
+Every API request should include an `X-Request-Id` header to enable request
+tracing and log correlation. If the header is omitted or invalid, the server
+will generate a new UUID-based request ID automatically.
+
+### Request Header
+
+| Header | Description |
+|--------|-------------|
+| `X-Request-Id` | Client-provided request ID (optional, max 128 chars) |
+
+### Response Header
+
+| Header | Description |
+|--------|-------------|
+| `X-Request-Id` | The final request ID used for the request (always present) |
+
 > **WARNING:** This API reference is auto-generated from the OpenAPI specification
 > but the generation tool has known issues with enum serialization and response
 > schema references. Specifically, the generator produces incorrect TypeScript types
