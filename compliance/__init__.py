@@ -1,1 +1,1 @@
-"""Compliance checking and auditing utilities for TentOfTrials."""
+"""Compliance checking and regulatory audit utilities for trading operations."""
