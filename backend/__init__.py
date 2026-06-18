@@ -1,1 +1,1 @@
-"""Backend services for the TentOfTrials trading and risk platform."""
+"""Backend services and API components for the TentOfTrials trading platform."""
