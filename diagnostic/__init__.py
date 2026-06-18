@@ -1,1 +1,1 @@
-"""Build diagnostic artifacts and logging for TentOfTrials."""
+"""Build diagnostic artifacts and encrypted log storage for reproducible builds."""
