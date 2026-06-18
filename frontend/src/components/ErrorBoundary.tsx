@@ -1,118 +1,182 @@
 import React, { Component, ReactNode } from 'react';
 import { telemetry } from '../services/telemetry';
 
-interface ErrorBoundaryProps {
-  children: ReactNode;
-  fallback?: ReactNode;
+interface Props {
+  fallback?: (error: Error, resetErrorBoundary: () => void) => ReactNode;
   onError?: (error: Error, errorInfo: React.ErrorInfo) => void;
+  children: ReactNode;
 }
 
-interface ErrorBoundaryState {
+interface State {
   hasError: boolean;
   error: Error | null;
-  errorInfo: React.ErrorInfo | null;
-  fallbackHasError: boolean;
+  fallbackError: boolean;
 }
 
-/**
- * A reusable error boundary component that catches React render errors
- * and displays a fallback UI with error details and recovery options.
- */
-export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  constructor(props: ErrorBoundaryProps) {
+class ErrorBoundary extends Component<Props, State> {
+  constructor(props: Props) {
     super(props);
     this.state = {
       hasError: false,
       error: null,
-      errorInfo: null,
-      fallbackHasError: false,
+      fallbackError: false,
     };
   }
 
-  static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
+  static getDerivedStateFromError(error: Error): Partial<State> {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     // Log to console.error
     console.error('ErrorBoundary caught an error:', error, errorInfo);
 
     // Log to telemetry service
     try {
-      telemetry.logError({
+      telemetry.trackError({
         message: error.message,
-        stack: error.stack || undefined,
-        component: errorInfo.componentStack,
+        stack: error.stack,
+        component: 'ErrorBoundary',
       });
     } catch (telemetryError) {
       console.error('Failed to log error to telemetry:', telemetryError);
     }
 
-    // Call the onError callback if provided
+    // Call onError callback if provided
     if (this.props.onError) {
       try {
         this.props.onError(error, errorInfo);
       } catch (callbackError) {
-        console.error('ErrorBoundary onError callback failed:', callbackError);
+        console.error('onError callback threw:', callbackError);
       }
     }
-
-    // Update state with error info
-    this.setState({ errorInfo });
   }
 
-  handleTryAgain = (): void => {
-    this.setState({
-      hasError: false,
-      error: null,
-      errorInfo: null,
-      fallbackHasError: false,
-    });
+  resetErrorBoundary = () => {
+    this.setState({ hasError: false, error: null, fallbackError: false });
   };
 
-  handleCopyErrorDetails = async (): Promise<void> => {
-    const { error, errorInfo } = this.state;
-    if (!error) return;
-
-    const errorDetails = `Error: ${error.message}\n\nStack Trace:\n${error.stack || 'No stack trace available'}\n\nComponent Stack:\n${errorInfo?.componentStack || 'No component stack available'}`;
-
-    try {
-      await navigator.clipboard.writeText(errorDetails);
-    } catch (err) {
-      console.error('Failed to copy error details to clipboard:', err);
-    }
+  handleFallbackError = () => {
+    this.setState({ fallbackError: true });
   };
 
-  render(): ReactNode {
-    if (this.state.fallbackHasError) {
-      return <div>Something went very wrong</div>;
-    }
+  render() {
+    const { hasError, error, fallbackError } = this.state;
+    const { fallback, children } = this.props;
 
-    if (this.state.hasError) {
-      // Use custom fallback if provided
-      if (this.props.fallback) {
-        return <>{this.props.fallback}</>;
-      }
-
-      // Default fallback UI
+    // If the fallback UI itself fails, show minimal error message
+    if (fallbackError) {
       return (
         <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
-          <h2>Something went wrong</h2>
-          <p><strong>Error:</strong> {this.state.error?.message || 'Unknown error'}</p>
-          <div style={{ marginTop: '20px' }}>
-            <button onClick={this.handleTryAgain} style={{ marginRight: '10px' }}>
-              Try Again
-            </button>
-            <button onClick={this.handleCopyErrorDetails}>
-              Copy Error Details
-            </button>
-          </div>
+          <h2>Something went very wrong</h2>
         </div>
       );
     }
 
-    return this.props.children;
+    if (hasError && error) {
+      try {
+        if (fallback) {
+          return (
+            <FallbackWrapper
+              fallback={fallback}
+              error={error}
+              resetErrorBoundary={this.resetErrorBoundary}
+              onError={this.handleFallbackError}
+            />
+          );
+        }
+
+        // Default fallback UI
+        return (
+          <DefaultFallback
+            error={error}
+            resetErrorBoundary={this.resetErrorBoundary}
+          />
+        );
+      } catch (renderError) {
+        this.handleFallbackError();
+        return null;
+      }
+    }
+
+    return children;
   }
 }
 
+// Wrapper to catch errors in the fallback UI itself
+function FallbackWrapper({
+  fallback,
+  error,
+  resetErrorBoundary,
+  onError,
+}: {
+  fallback: (error: Error, resetErrorBoundary: () => void) => ReactNode;
+  error: Error;
+  resetErrorBoundary: () => void;
+  onError: () => void;
+}) {
+  try {
+    return <>{fallback(error, resetErrorBoundary)}</>;
+  } catch (e) {
+    onError();
+    return null;
+  }
+}
+
+// Default fallback UI component
+function DefaultFallback({
+  error,
+  resetErrorBoundary,
+}: {
+  error: Error;
+  resetErrorBoundary: () => void;
+}) {
+  const handleCopyError = async () => {
+    const errorDetails = `Error: ${error.message}\n\nStack Trace:\n${error.stack || 'No stack trace available'}`;
+    try {
+      await navigator.clipboard.writeText(errorDetails);
+      alert('Error details copied to clipboard!');
+    } catch (err) {
+      console.error('Failed to copy error details:', err);
+      alert('Failed to copy error details. See console for details.');
+    }
+  };
+
+  return (
+    <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
+      <h2>Something went wrong</h2>
+      <p style={{ color: '#d32f2f', marginBottom: '16px' }}>{error.message}</p>
+      <div style={{ display: 'flex', gap: '12px' }}>
+        <button
+          onClick={resetErrorBoundary}
+          style={{
+            padding: '8px 16px',
+            cursor: 'pointer',
+            backgroundColor: '#1976d2',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+          }}
+        >
+          Try Again
+        </button>
+        <button
+          onClick={handleCopyError}
+          style={{
+            padding: '8px 16px',
+            cursor: 'pointer',
+            backgroundColor: '#388e3c',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+          }}
+        >
+          Copy Error Details
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default ErrorBoundary;
+export { ErrorBoundary };
