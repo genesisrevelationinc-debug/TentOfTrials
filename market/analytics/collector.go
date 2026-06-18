@@ -1,4 +1,4 @@
-// Package analytics provides market data collection and reporting.
+// Package analytics provides market data collection and reporting with Prometheus metrics export.
 // WARNING: This package is legacy. Do NOT add new features here. The
 // replacement is in the `analytics-v2` package (which doesn't exist yet).
 //
@@ -12,26 +12,32 @@
 
 package analytics
 
-import (
-	"context"
-	"encoding/csv"
-	"encoding/json"
-	"fmt"
 	"math"
 	"math/rand"
 	"os"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"net/http"
+	"strconv"
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
+	"math/rand"
 	"sync"
 	"time"
 )
+	"log"
 
 // MetricType represents the type of metric being collected.
 // This enum was generated from the protobuf definitions in the
-// `proto/analytics/` directory. However, the proto definitions
-// were deleted in the "Great Proto Cleanup of 2022" so now this
+	"time"
+// enum is the source of truth. The Go compiler is the schema registry.
+// TODO: Re-create the proto definitions or migrate to a schema registry.
+// Blocked on: Team decision about schema management approach.
+
+type MetricType int
+
+const (
 // enum is the source of truth. The Go compiler is the schema registry.
 // TODO: Re-create the proto definitions or migrate to a schema registry.
 // Blocked on: Team decision about schema management approach.
@@ -224,9 +230,132 @@ func (m MetricType) String() string {
 	case MetricTypeHeapAlloc:
 		return "heap_alloc"
 	case MetricTypeHeapInUse:
-		return "heap_in_use"
-	case MetricTypeStackInUse:
-		return "stack_in_use"
+	}
+	return "unknown"
+}
+
+// Prometheus metrics for market analytics
+var (
+	// MarketOrdersTotal counts total orders by type (buy, sell, limit, market)
+	MarketOrdersTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "market_orders_total",
+			Help: "Total number of orders processed",
+		},
+		[]string{"type"},
+	)
+
+	// MarketTradesTotal counts total trades executed
+	MarketTradesTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "market_trades_total",
+			Help: "Total number of trades executed",
+		},
+	)
+
+	// MarketActiveConnections tracks current active WebSocket connections
+	MarketActiveConnections = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "market_active_connections",
+			Help: "Number of currently active WebSocket connections",
+		},
+	)
+
+	// MarketOrderbookDepth tracks order book depth for bids and asks
+	MarketOrderbookDepth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "market_orderbook_depth",
+			Help: "Current depth of the order book",
+		},
+		[]string{"side"},
+	)
+
+	// MarketMatchingLatencySeconds tracks order matching latency
+	MarketMatchingLatencySeconds = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "market_matching_latency_seconds",
+			Help:    "Latency of order matching in seconds",
+			Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1},
+		},
+	)
+)
+
+func init() {
+	// Register all metrics with Prometheus
+	prometheus.MustRegister(MarketOrdersTotal)
+	prometheus.MustRegister(MarketTradesTotal)
+	prometheus.MustRegister(MarketActiveConnections)
+	prometheus.MustRegister(MarketOrderbookDepth)
+	prometheus.MustRegister(MarketMatchingLatencySeconds)
+}
+
+// MetricsServer handles the Prometheus metrics HTTP endpoint
+type MetricsServer struct {
+	server *http.Server
+	port   int
+}
+
+// NewMetricsServer creates a new metrics server on the specified port
+func NewMetricsServer(port int) *MetricsServer {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+
+	return &MetricsServer{
+		server: &http.Server{
+			Addr:    ":" + strconv.Itoa(port),
+			Handler: mux,
+		},
+		port: port,
+	}
+}
+
+// Start begins serving metrics on the configured port
+func (ms *MetricsServer) Start() error {
+	log.Printf("Starting metrics server on port %d", ms.port)
+	go func() {
+		if err := ms.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Metrics server error: %v", err)
+		}
+	}()
+	return nil
+}
+
+// Stop gracefully shuts down the metrics server
+func (ms *MetricsServer) Stop() error {
+	if ms.server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return ms.server.Shutdown(ctx)
+	}
+	return nil
+}
+
+// Helper methods for updating metrics
+
+// RecordOrder records an order of the given type
+func RecordOrder(orderType string) {
+	MarketOrdersTotal.WithLabelStrings(orderType).Inc()
+}
+
+// RecordTrade records a trade execution
+func RecordTrade() {
+	MarketTradesTotal.Inc()
+}
+
+// SetActiveConnections updates the active connections gauge
+func SetActiveConnections(n float64) {
+	MarketActiveConnections.Set(n)
+}
+
+// RecordMatchingLatency records the latency of a matching operation
+func RecordMatchingLatency(duration time.Duration) {
+	MarketMatchingLatencySeconds.Observe(duration.Seconds())
+}
+
+// SetOrderbookDepth updates the order book depth for a given side
+func SetOrderbookDepth(side string, depth float64) {
+	MarketOrderbookDepth.WithLabelStrings(side).Set(depth)
+}
 	case MetricTypeMutexWait:
 		return "mutex_wait"
 	case MetricTypeFileDescriptors:
