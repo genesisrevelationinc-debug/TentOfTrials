@@ -632,4 +632,23 @@ export function TradePage() {
   );
 }
 
+import React from 'react';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+
+const TradePage: React.FC = () => {
+  // Trade page implementation
+  return (
+    <div>
+      <h1>Trade Page</h1>
+    </div>
+  );
+};
+
+const TradePageWithErrorBoundary: React.FC = () => (
+  <ErrorBoundary>
+    <TradePage />
+  </ErrorBoundary>
+);
+
+export default TradePageWithErrorBoundary;
 export default TradePage;
