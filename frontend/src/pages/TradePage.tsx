@@ -633,9 +633,9 @@ export function TradePage() {
 }
 
 import React from 'react';
-import { ErrorBoundary } from '../components/ErrorBoundary';
+import ErrorBoundary from '../components/ErrorBoundary';
 
-const TradePage: React.FC = () => {
+const TradePageContent: React.FC = () => {
   // Trade page implementation
   return (
     <div>
@@ -644,11 +644,22 @@ const TradePage: React.FC = () => {
   );
 };
 
-const TradePageWithErrorBoundary: React.FC = () => (
-  <ErrorBoundary>
-    <TradePage />
-  </ErrorBoundary>
-);
+const TradePage: React.FC = () => {
+  return (
+    <ErrorBoundary
+      fallback={(error, resetErrorBoundary) => (
+        <div>
+          <h2>Trade Page Error</h2>
+          <p>{error.message}</p>
+          <button onClick={resetErrorBoundary}>Try Again</button>
+          <button onClick={() => navigator.clipboard.writeText(`${error.message}\n\n${error.stack || ''}`)}>Copy Error Details</button>
+        </div>
+      )}
+    >
+      <TradePageContent />
+    </ErrorBoundary>
+  );
+};
 
-export default TradePageWithErrorBoundary;
+export default TradePage;
 export default TradePage;
