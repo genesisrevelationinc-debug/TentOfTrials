@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Build orchestrator for the TentOfTrials multi-language trading and risk platform.
 
-Provides a unified build system with diagnostics, encryption, and modular compilation."""
+"""Build orchestrator for the TentOfTrials trading and risk platform.
+
+Provides modular build, clean, and diagnostic commands for all project components."""
 
 import argparse
 import datetime
