@@ -1,1 +1,1 @@
-"""Frontend build and deployment utilities for TentOfTrials."""
+"""React-based web frontend for the TentOfTrials trading and risk platform."""
