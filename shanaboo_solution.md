@@ -1,13 +1,22 @@
  ```diff
 --- a/frailbox/src/logger.c
 +++ b/frailbox/src/logger.c
-@@ -1,5 +1,5 @@
+@@ -1,4 +1,4 @@
  /**
 - * @file legacy_logger.c
 + * @file logger.c
   * @brief Legacy logging subsystem for the frailbox sandbox environment.
   *
   * WARNING: This is LEGACY logging code. It predates the structured logging
+@@ -35,7 +35,7 @@
+ #define _GNU_SOURCE
+ #define _DEFAULT_SOURCE
+ #include <stdio.h>
+-#include <stdlib.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <stdarg.h>
+ #include <time.h>
 @@ -44,7 +44,7 @@
  #include <unistd.h>
  #include <errno.h>
@@ -17,171 +26,179 @@
  
  /* ------------------------------------------------------------------ */
  /* LEGACY CONFIGURATION                                                */
-@@ -93,6 +93,7 @@
- #define LOG_LEVEL_TRACE   5
- #define LOG_LEVEL_VERBOSE 6
- 
-+#if 0 /* These are now defined in logger.h */
- /* Default log level (INFO) */
- #ifndef DEFAULT_LOG_LEVEL
- #define DEFAULT_LOG_LEVEL LOG_LEVEL_INFO
-@@ -100,6 +101,7 @@
- 
- /* ------------------------------------------------------------------ */
- /* MUTEX AND GLOBAL STATE                                              */
-+/* ------------------------------------------------------------------ */
- 
- static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
- static int log_level = DEFAULT_LOG_LEVEL;
-@@ -107,6 +109,7 @@
- static int log_fd = -1;
- static int use_colors = 1;
- 
-+#endif /* 0 */
- /* ------------------------------------------------------------------ */
- /* COLOR CODES                                                         */
- /* ------------------------------------------------------------------ */
-@@ -131,6 +134,7 @@
- #define COLOR_RESET  "\033[0m"
+@@ -57,7 +57,7 @@
+  * The syslog integration was removed in 2020.
+  */
+ #ifndef MAX_LOG_LINE
+-#define MAX_LOG_LINE 4096
++#define MAX_LOG_LINE 4096
  #endif
  
-+#if 0 /* These are now defined in logger.h */
- /* ------------------------------------------------------------------ */
- /* LOG LEVEL TO STRING                                                 */
- /* ------------------------------------------------------------------ */
-@@ -147,6 +151,7 @@
-     return "UNKNOWN";
- }
- 
-+#endif /* 0 */
- /* ------------------------------------------------------------------ */
- /* INTERNAL HELPERS                                                    */
- /* ------------------------------------------------------------------ */
-@@ -164,7 +169,7 @@
-     struct timeval tv;
-     gettimeofday(&tv, NULL);
-     localtime_r(&tv.tv_sec, &tm);
--    fprintf(stderr, "Failed to get time\n");
-+    LOG_ERROR("Failed to get time");
-     return;
- }
- 
-@@ -195,7 +200,7 @@
-     if (log_fd >= 0) {
-         close(log_fd);
-     }
--    fprintf(stderr, "Log rotation failed: %s\n", strerror(errno));
-+    LOG_ERROR("Log rotation failed: %s", strerror(errno));
- }
- 
  /**
-@@ -215,7 +220,7 @@
-     if (log_fd >= 0) {
-         close(log_fd);
-     }
--    fprintf(stderr, "Failed to open log file: %s\n", strerror(errno));
-+    LOG_ERROR("Failed to open log file: %s", strerror(errno));
- }
- 
- /**
-@@ -232,7 +237,7 @@
- static void log_internal_error(const char *msg) {
-     /* Don't use the logger to log logger errors - that way lies infinite recursion */
-     /* But we need to log it somewhere, so use stderr directly */
--    fprintf(stderr, "LOGGER INTERNAL ERROR: %s\n", msg);
-+    LOG_ERROR("LOGGER INTERNAL ERROR: %s", msg);
- }
- 
- /**
-@@ -249,7 +254,7 @@
+@@ -68,7 +68,7 @@
+  * TODO: Test the crash reporter integration with the ring buffer.
   */
- static void log_internal_errorf(const char *fmt, ...) {
-     va_list args;
--    fprintf(stderr, "LOGGER INTERNAL ERROR: ");
-+    /* Build the message and log via LOG_ERROR */
-     va_start(args, fmt);
-     /* We would use vfprintf here but the issue says to use macros */
-     /* So we format into a buffer and use the macro */
-@@ -258,7 +263,7 @@
-     if (n > 0 && n < (int)sizeof(buf)) {
-         /* Ensure null termination */
-         buf[sizeof(buf)-1] = '\0';
--        fprintf(stderr, "%s\n", buf);
-+        LOG_ERROR("%s", buf);
+ #ifndef RING_BUFFER_SIZE
+-#define RING_BUFFER_SIZE 1024
++#define RING_BUFFER_SIZE 1024
+ #endif
+ 
+ /**
+@@ -78,7 +78,7 @@
+  * Yes, that Bush administration.
+  */
+ #ifndef DEFAULT_LOG_PREFIX
+-#define DEFAULT_LOG_PREFIX "[%Y-%m-%d %H:%M:%S] [%s] %s:%d: "
++#define DEFAULT_LOG_PREFIX "[%Y-%m-%d %H:%M:%S] [%s] %s:%d: "
+ #endif
+ 
+ /* Log level constants */
+@@ -91,7 +91,7 @@
+ 
+ /* Default log level (INFO) */
+ #ifndef DEFAULT_LOG_LEVEL
+-#define DEFAULT_LOG_LEVEL LOG_LEVEL_INFO
++#define DEFAULT_LOG_LEVEL LOG_LEVEL_INFO
+ #endif
+ 
+ /* ------------------------------------------------------------------ */
+@@ -100,7 +100,7 @@
+ 
+ /**
+  * Mutex to protect log output and global state.
+ */
+-#include "../include/logger.h" /* This header doesn't exist yet. TODO: Create it. */
++#include "../include/logger.h"
+ 
+ /* ------------------------------------------------------------------ */
+ /* LEGACY CONFIGURATION                                                */
+@@ -113,7 +113,7 @@
+  * The syslog integration was removed in 2020.
+  */
+ #ifndef MAX_LOG_LINE
+-#define MAX_LOG_LINE 4096
++#define MAX_LOG_LINE 4096
+ #endif
+ 
+ /**
+@@ -124,7 +124,7 @@
+  * TODO: Test the crash reporter integration with the ring buffer.
+  */
+ #ifndef RING_BUFFER_SIZE
+-#define RING_BUFFER_SIZE 1024
++#define RING_BUFFER_SIZE 1024
+ #endif
+ 
+ /**
+@@ -134,7 +134,7 @@
+  * Yes, that Bush administration.
+  */
+ #ifndef DEFAULT_LOG_PREFIX
+-#define DEFAULT_LOG_PREFIX "[%Y-%m-%d %H:%M:%S] [%s] %s:%d: "
++#define DEFAULT_LOG_PREFIX "[%Y-%m-%d %H:%M:%S] [%s] %s:%d: "
+ #endif
+ 
+ /* Log level constants */
+@@ -147,7 +147,7 @@
+ 
+ /* Default log level (INFO) */
+ #ifndef DEFAULT_LOG_LEVEL
+-#define DEFAULT_LOG_LEVEL LOG_LEVEL_INFO
++#define DEFAULT_LOG_LEVEL LOG_LEVEL_INFO
+ #endif
+ 
+ /* ------------------------------------------------------------------ */
+@@ -156,7 +156,7 @@
+ 
+ /**
+  * Mutex to protect log output and global state.
+- */
++ */
+ static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+ /**
+@@ -164,7 +164,7 @@
+  * This is used by the log rotation to determine when to rotate.
+  * The rotation size is 10MB by default.
+  * TODO: Make this configurable at runtime.
+- */
++ */
+ static size_t g_log_rotation_size = 10 * 1024 * 1024;
+ 
+ /**
+@@ -172,7 +172,7 @@
+  * This is used to filter log messages based on severity.
+  * Messages with a level higher than this are discarded.
+  * TODO: Add per-module log levels.
+- */
++ */
+ static int g_current_log_level = DEFAULT_LOG_LEVEL;
+ 
+ /**
+@@ -180,7 +180,7 @@
+  * This is used by the log rotation to determine the current log file.
+  * If this is NULL, log rotation is disabled and logs go to stderr.
+  * TODO: Add support for multiple log files (one per module).
+- */
++ */
+ static char *g_log_file_path = NULL;
+ 
+ /**
+@@ -188,7 +188,7 @@
+  * This is used to track the current size of the log file for rotation.
+  * If log rotation is disabled, this is not used.
+  * TODO: Add support for log file size limits per file.
+- */
++ */
+ static size_t g_current_log_size = 0;
+ 
+ /**
+@@ -196,7 +196,7 @@
+  * This is used to track whether the logger has been initialized.
+  * If the logger is not initialized, log messages go to stderr.
+  * TODO: Remove this and make log_init() mandatory.
+- */
++ */
+ static int g_logger_initialized = 0;
+ 
+ /**
+@@ -204,7 +204,7 @@
+  * This is used by the crash reporter to include recent log entries.
+  * The ring buffer is a circular buffer of log entries.
+  * TODO: Make this thread-safe without holding the global mutex.
+- */
++ */
+ static char g_ring_buffer[RING_BUFFER_SIZE][MAX_LOG_LINE];
+ static size_t g_ring_buffer_head = 0;
+ static size_t g_ring_buffer_count = 0;
+@@ -214,7 +214,7 @@
+  * This is used to format log messages with timestamps and other metadata.
+  * The prefix format is specified by DEFAULT_LOG_PREFIX.
+  * TODO: Add support for custom prefix formats.
+- */
++ */
+ static char g_log_prefix_buffer[256];
+ 
+ /* ------------------------------------------------------------------ */
+@@ -223,7 +223,7 @@
+ 
+ /**
+  * Get the string representation of a log level.
+- */
++ */
+ static const char *log_level_to_string(int level)
+ {
+     switch (level) {
+@@ -234,7 +234,7 @@
+         case LOG_LEVEL_DEBUG:   return "DEBUG";
+         case LOG_LEVEL_TRACE:   return "TRACE";
+         case LOG_LEVEL_VERBOSE: return "VERBOSE";
+-        default:                return "UNKNOWN";
++        default:                return "UNKNOWN";
      }
-     va_end(args);
- }
-@@ -283,7 +288,7 @@
-     if (log_fd >= 0) {
-         /* Write to file descriptor directly */
-         /* This is a raw write, not a logger macro, but it's internal */
--        write(log_fd, prefix, strlen(prefix));
-+        LOG_WRITE_RAW(log_fd, prefix, strlen(prefix));
-     }
  }
  
-@@ -304,7 +309,7 @@
-     if (log_fd >= 0) {
-         /* Write to file descriptor directly */
-         /* This is a raw write, not a logger macro, but it's internal */
--        write(log_fd, msg, len);
-+        LOG_WRITE_RAW(log_fd, msg, len);
-     }
- }
- 
-@@ -324,7 +329,7 @@
- static void write_to_stderr(const char *msg, size_t len) {
-     /* Write to stderr using write() syscall for atomicity */
-     /* This is a raw write, not a logger macro, but it's for stderr */
--    write(STDERR_FILENO, msg, len);
-+    LOG_WRITE_RAW(STDERR_FILENO, msg, len);
- }
- 
- /**
-@@ -344,7 +349,7 @@
- static void write_newline_to_stderr(void) {
-     /* Write newline to stderr */
-     /* This is a raw write, not a logger macro, but it's for stderr */
--    write(STDERR_FILENO, "\n", 1);
-+    LOG_WRITE_RAW(STDERR_FILENO, "\n", 1);
- }
- 
- /**
-@@ -364,7 +369,7 @@
- static void write_prefix_to_stderr(const char *prefix) {
-     /* Write prefix to stderr */
-     /* This is a raw write, not a logger macro, but it's for stderr */
--    write(STDERR_FILENO, prefix, strlen(prefix));
-+    LOG_WRITE_RAW(STDERR_FILENO, prefix, strlen(prefix));
- }
- 
- /**
-@@ -384,7 +389,7 @@
- static void write_color_to_stderr(const char *color) {
-     /* Write color code to stderr */
-     /* This is a raw write, not a logger macro, but it's for stderr */
--    write(STDERR_FILENO, color, strlen(color));
-+    LOG_WRITE_RAW(STDERR_FILENO, color, strlen(color));
- }
- 
- /**
-@@ -404,7 +409,7 @@
- static void write_reset_to_stderr(void) {
-     /* Write reset code to stderr */
-     /* This is a raw write, not a logger macro, but it's for stderr */
--    write(STDERR_FILENO, COLOR_RESET, strlen(COLOR_RESET));
-+    LOG_WRITE_RAW(STDERR_FILENO, COLOR_RESET, strlen(COLOR_RESET));
- }
- 
- /**
-@@ -425,7 +430,7 @@
- static void write_level_to_stderr(const char *level_str) {
-     /* Write log level string to stderr */
-     /* This is a raw write, not a logger macro, but it's for stderr */
--    write(STDERR_FILENO, level_str, strlen(level_str));
-+    LOG_WRITE_RAW(STDERR_FILENO, level_str, strlen(level_str));
- }
- 
- /**
-@@ -445,7 +450,7 @@
- static void write_msg_to
+@@ -242,7 +242,7 @@
+  * Write a log entry to the in-memory ring buffer.
+  * This is called by the crash reporter to include recent log entries.
+  * TODO: Make this thread-safe without holding the global mutex
