@@ -1,1 +1,1 @@
-"""Frailbox C module integration and build helpers for TentOfTrials."""
+"""Low-level C components and engine bindings for high-performance trading operations."""
