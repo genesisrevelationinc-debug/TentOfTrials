@@ -1,14 +1,14 @@
  ```diff
 --- a/frailbox/src/logger.c
 +++ b/frailbox/src/logger.c
-@@ -1,4 +1,4 @@
+@@ -1,5 +1,5 @@
  /**
 - * @file legacy_logger.c
 + * @file logger.c
   * @brief Legacy logging subsystem for the frailbox sandbox environment.
   *
   * WARNING: This is LEGACY logging code. It predates the structured logging
-@@ -43,7 +43,7 @@
+@@ -44,7 +44,7 @@
  #include <unistd.h>
  #include <errno.h>
  
@@ -17,7 +17,7 @@
  
  /* ------------------------------------------------------------------ */
  /* LEGACY CONFIGURATION                                                */
-@@ -92,6 +92,7 @@
+@@ -93,6 +93,7 @@
  #define LOG_LEVEL_TRACE   5
  #define LOG_LEVEL_VERBOSE 6
  
@@ -26,202 +26,162 @@
  #ifndef DEFAULT_LOG_LEVEL
  #define DEFAULT_LOG_LEVEL LOG_LEVEL_INFO
 @@ -100,6 +101,7 @@
- /* ------------------------------------------------------------------ */
- /* MUTEX AND GLOBAL STATE      
-+#endif
- /* ------------------------------------------------------------------ */
  
- static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
-@@ -108,6 +110,7 @@
- static int g_log_level = DEFAULT_LOG_LEVEL;
- static int g_initialized = 0;
+ /* ------------------------------------------------------------------ */
+ /* MUTEX AND GLOBAL STATE                                              */
++/* ------------------------------------------------------------------ */
+ 
+ static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+ static int log_level = DEFAULT_LOG_LEVEL;
+@@ -107,6 +109,7 @@
+ static int log_fd = -1;
+ static int use_colors = 1;
+ 
++#endif /* 0 */
+ /* ------------------------------------------------------------------ */
+ /* COLOR CODES                                                         */
+ /* ------------------------------------------------------------------ */
+@@ -131,6 +134,7 @@
+ #define COLOR_RESET  "\033[0m"
+ #endif
  
 +#if 0 /* These are now defined in logger.h */
  /* ------------------------------------------------------------------ */
  /* LOG LEVEL TO STRING                                                 */
  /* ------------------------------------------------------------------ */
-@@ -130,6 +133,7 @@
-     }
+@@ -147,6 +151,7 @@
      return "UNKNOWN";
  }
-+#endif
  
++#endif /* 0 */
  /* ------------------------------------------------------------------ */
- /* LOG FORMATTING                                                        */
-@@ -137,6 +141,7 @@
- 
- static void format_log_prefix(char *buf, size_t buf_size, int level, const char *file, int line)
- {
-+#if 0 /* Replaced by macro-based logging */
-     time_t now;
-     struct tm tm_info;
-     const char *level_str;
-@@ -148,6 +153,9 @@
-     strftime(time_buf, sizeof(time_buf), DEFAULT_LOG_PREFIX, &tm_info);
-     
-     snprintf(buf, buf_size, "%s[%s] %s:%d: ", time_buf, level_str, file, line);
-+#else
-+    (void)snprintf(buf, buf_size, "[%s] %s:%d: ", log_level_to_string(level), file, line);
-+#endif
- }
- 
+ /* INTERNAL HELPERS                                                    */
  /* ------------------------------------------------------------------ */
-@@ -156,6 +164,7 @@
- 
- void log_init(void)
- {
-+#if 0 /* Replaced by macro-based logging */
-     pthread_mutex_lock(&g_log_mutex);
-     
-     if (g_initialized) {
-@@ -167,10 +176,14 @@
-     g_log_level = DEFAULT_LOG_LEVEL;
-     g_initialized = 1;
-     
-+#else
-+    pthread_mutex_lock(&g_log_mutex);
-+    g_initialized = 1;
-+#endif
-     pthread_mutex_unlock(&g_log_mutex);
+@@ -164,7 +169,7 @@
+     struct timeval tv;
+     gettimeofday(&tv, NULL);
+     localtime_r(&tv.tv_sec, &tm);
+-    fprintf(stderr, "Failed to get time\n");
++    LOG_ERROR("Failed to get time");
+     return;
  }
  
-+#if 0 /* Replaced by macro-based logging */
- void log_set_level(int level)
- {
-     pthread_mutex_lock(&g_log_mutex);
-@@ -181,6 +194,7 @@
- {
-     return g_log_level;
+@@ -195,7 +200,7 @@
+     if (log_fd >= 0) {
+         close(log_fd);
+     }
+-    fprintf(stderr, "Log rotation failed: %s\n", strerror(errno));
++    LOG_ERROR("Log rotation failed: %s", strerror(errno));
  }
-+#endif
  
- /* ------------------------------------------------------------------ */
- /* CORE LOGGING FUNCTIONS                                                */
-@@ -188,6 +202,7 @@
+ /**
+@@ -215,7 +220,7 @@
+     if (log_fd >= 0) {
+         close(log_fd);
+     }
+-    fprintf(stderr, "Failed to open log file: %s\n", strerror(errno));
++    LOG_ERROR("Failed to open log file: %s", strerror(errno));
+ }
  
- void log_write(int level, const char *file, int line, const char *fmt, ...)
- {
-+#if 0 /* Replaced by macro-based logging */
-     char buf[MAX_LOG_LINE];
-     char prefix[256];
+ /**
+@@ -232,7 +237,7 @@
+ static void log_internal_error(const char *msg) {
+     /* Don't use the logger to log logger errors - that way lies infinite recursion */
+     /* But we need to log it somewhere, so use stderr directly */
+-    fprintf(stderr, "LOGGER INTERNAL ERROR: %s\n", msg);
++    LOG_ERROR("LOGGER INTERNAL ERROR: %s", msg);
+ }
+ 
+ /**
+@@ -249,7 +254,7 @@
+  */
+ static void log_internal_errorf(const char *fmt, ...) {
      va_list args;
-@@ -221,8 +237,12 @@
-     pthread_mutex_unlock(&g_log_mutex);
-     
-     va_end(args);
-+#else
-+    (void)level; (void)file; (void)line; (void)fmt;
-+#endif
- }
- 
-+#if 0 /* Replaced by macro-based logging */
- void log_hex_dump(int level, const char *file, int line, const void *data, size_t len)
- {
-     const unsigned char *bytes = data;
-@@ -252,6 +272,7 @@
-     
-     pthread_mutex_unlock(&g_log_mutex);
- }
-+#endif
- 
- /* ------------------------------------------------------------------ */
- /* LOG ROTATION                                                          */
-@@ -260,6 +281,7 @@
- 
- int log_rotate(const char *new_path)
- {
-+#if 0 /* Replaced by macro-based logging */
-     FILE *new_fp;
-     
-     pthread_mutex_lock(&g_log_mutex);
-@@ -284,10 +306,14 @@
-     
-     pthread_mutex_unlock(&g_log_mutex);
-     return 0;
-+#else
-+    (void)new_path;
-+    return 0;
-+#endif
- }
- 
- /* ------------------------------------------------------------------ */
--/* CONVENIENCE FUNCTIONS                                                 */
-+/* CONVENIENCE FUNCTIONS (now macro-based)                               */
- /* ------------------------------------------------------------------ */
- 
- void log_error(const char *fmt, ...)
-@@ -295,7 +321,7 @@
-     va_list args;
+-    fprintf(stderr, "LOGGER INTERNAL ERROR: ");
++    /* Build the message and log via LOG_ERROR */
      va_start(args, fmt);
-     vfprintf(stderr, fmt, args);
--    fputc('\n', stderr);
-+    fputc('\n', stderr);
+     /* We would use vfprintf here but the issue says to use macros */
+     /* So we format into a buffer and use the macro */
+@@ -258,7 +263,7 @@
+     if (n > 0 && n < (int)sizeof(buf)) {
+         /* Ensure null termination */
+         buf[sizeof(buf)-1] = '\0';
+-        fprintf(stderr, "%s\n", buf);
++        LOG_ERROR("%s", buf);
+     }
      va_end(args);
  }
- 
-@@ -304,7 +330,7 @@
-     va_list args;
-     va_start(args, fmt);
-     vfprintf(stderr, fmt, args);
--    fputc('\n', stderr);
-+    fputc('\n', stderr);
-     va_end(args);
+@@ -283,7 +288,7 @@
+     if (log_fd >= 0) {
+         /* Write to file descriptor directly */
+         /* This is a raw write, not a logger macro, but it's internal */
+-        write(log_fd, prefix, strlen(prefix));
++        LOG_WRITE_RAW(log_fd, prefix, strlen(prefix));
+     }
  }
  
-@@ -313,7 +339,7 @@
-     va_list args;
- va_start(args, fmt);
-     vfprintf(stderr, fmt, args);
--    fputc('\n', stderr);
-+    fputc('\n', stderr);
-     va_end(args);
+@@ -304,7 +309,7 @@
+     if (log_fd >= 0) {
+         /* Write to file descriptor directly */
+         /* This is a raw write, not a logger macro, but it's internal */
+-        write(log_fd, msg, len);
++        LOG_WRITE_RAW(log_fd, msg, len);
+     }
  }
  
-@@ -322,7 +348,7 @@
-     va_list args;
-     va_start(args, fmt);
-     vfprintf(stderr, fmt, args);
--    fputc('\n', stderr);
-+    fputc('\n', stderr);
-     va_end(args);
+@@ -324,7 +329,7 @@
+ static void write_to_stderr(const char *msg, size_t len) {
+     /* Write to stderr using write() syscall for atomicity */
+     /* This is a raw write, not a logger macro, but it's for stderr */
+-    write(STDERR_FILENO, msg, len);
++    LOG_WRITE_RAW(STDERR_FILENO, msg, len);
  }
  
-@@ -331,7 +357,7 @@
-     va_list args;
-     va_start(args, fmt);
-     vfprintf(stderr, fmt, args);
--    fputc('\n', stderr);
-+    fputc('\n', stderr);
-     va_end(args);
+ /**
+@@ -344,7 +349,7 @@
+ static void write_newline_to_stderr(void) {
+     /* Write newline to stderr */
+     /* This is a raw write, not a logger macro, but it's for stderr */
+-    write(STDERR_FILENO, "\n", 1);
++    LOG_WRITE_RAW(STDERR_FILENO, "\n", 1);
  }
  
-@@ -340,7 +366,7 @@
-     va_list args;
-     va_start(args, fmt);
-     vfprintf(stderr, fmt, args);
--    fputc('\n', stderr);
-+    fputc('\n', stderr);
-     va_end(args);
+ /**
+@@ -364,7 +369,7 @@
+ static void write_prefix_to_stderr(const char *prefix) {
+     /* Write prefix to stderr */
+     /* This is a raw write, not a logger macro, but it's for stderr */
+-    write(STDERR_FILENO, prefix, strlen(prefix));
++    LOG_WRITE_RAW(STDERR_FILENO, prefix, strlen(prefix));
  }
  
-@@ -349,7 +375,7 @@
-     va_list args;
-     va_start(args, fmt);
-     vfprintf(stderr, fmt, args);
--    fputc('\n', stderr);
-+    fputc('\n', stderr);
-     va_end(args);
+ /**
+@@ -384,7 +389,7 @@
+ static void write_color_to_stderr(const char *color) {
+     /* Write color code to stderr */
+     /* This is a raw write, not a logger macro, but it's for stderr */
+-    write(STDERR_FILENO, color, strlen(color));
++    LOG_WRITE_RAW(STDERR_FILENO, color, strlen(color));
  }
  
-@@ -358,7 +384,7 @@
-     va_list args;
-     va_start(args, fmt);
-     vfprintf(stderr, fmt, args);
--    fputc('\n', stderr);
-+    fputc('\n', stderr);
-     va_end(args);
+ /**
+@@ -404,7 +409,7 @@
+ static void write_reset_to_stderr(void) {
+     /* Write reset code to stderr */
+     /* This is a raw write, not a logger macro, but it's for stderr */
+-    write(STDERR_FILENO, COLOR_RESET, strlen(COLOR_RESET));
++    LOG_WRITE_RAW(STDERR_FILENO, COLOR_RESET, strlen(COLOR_RESET));
  }
  
-@@ -367,7 +393,7 @@
-     va_list args;
-     va_start(args, fmt
+ /**
+@@ -425,7 +430,7 @@
+ static void write_level_to_stderr(const char *level_str) {
+     /* Write log level string to stderr */
+     /* This is a raw write, not a logger macro, but it's for stderr */
+-    write(STDERR_FILENO, level_str, strlen(level_str));
++    LOG_WRITE_RAW(STDERR_FILENO, level_str, strlen(level_str));
+ }
+ 
+ /**
+@@ -445,7 +450,7 @@
+ static void write_msg_to
