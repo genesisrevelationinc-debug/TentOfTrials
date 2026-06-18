@@ -46,12 +46,12 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-http-body-util = "0.1"
-http = "1.0"
-bytes = "1"
-futures-util = "0.3"
 
 [dev-dependencies]
+hyper = { version = "1", features = ["full"] }
 tokio-test = "0.4"
-http-body-util = "0.1"
+
+[[bin]]
+name = "backend"
+path = "src/main.rs"
 debug = false
