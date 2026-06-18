@@ -621,7 +621,8 @@ export function AdminPage() {
 import React from 'react';
 import ErrorBoundary from '../components/ErrorBoundary';
 
-const AdminPage: React.FC = () => {
+const AdminPageContent: React.FC = () => {
+  // Admin page implementation
   return (
     <div>
       <h1>Admin Page</h1>
@@ -629,13 +630,22 @@ const AdminPage: React.FC = () => {
   );
 };
 
-const AdminPageWithErrorBoundary: React.FC = () => {
+const AdminPage: React.FC = () => {
   return (
-    <ErrorBoundary>
-      <AdminPage />
+    <ErrorBoundary
+      fallback={(error, resetErrorBoundary) => (
+        <div>
+          <h2>Admin Page Error</h2>
+          <p>{error.message}</p>
+          <button onClick={resetErrorBoundary}>Try Again</button>
+          <button onClick={() => navigator.clipboard.writeText(`${error.message}\n\n${error.stack || ''}`)}>Copy Error Details</button>
+        </div>
+      )}
+    >
+      <AdminPageContent />
     </ErrorBoundary>
   );
 };
 
-export default AdminPageWithErrorBoundary;
+export default AdminPage;
 export default AdminPage;
