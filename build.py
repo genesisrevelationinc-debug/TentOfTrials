@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import argparse
 import datetime
 import getpass
@@ -12,19 +13,25 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import Path
 from typing import Optional
+
+# Import the generator for stale check
+import importlib.util
 
 ROOT = Path(__file__).resolve().parent
 DIAGNOSTIC_DIR = ROOT / "diagnostic"
 DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
-ENCRYPTLY_BLOCKER_MESSAGE = "encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly."
+
+"encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly."
+
+
+BUILD_REFERENCE_PATH = ROOT / "docs" / "BUILD_MODULES.md"
 
 
 def current_commit_id() -> str:
     """Return the first 4 bytes (8 hex chars) of HEAD for stable per-commit diagnostics."""
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--verify", "HEAD"],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
@@ -53,12 +60,13 @@ def split_diagnostic_logd(logd_path: Path, chunk_size: int = DIAGNOSTIC_CHUNK_SI
         return [logd_path]
 
     chunks: list[Path] = []
-    stem = logd_path.stem
-    with logd_path.open("rb") as source:
-        index = 1
-        while True:
-            data = source.read(chunk_size)
-            if not data:
+    build_dir: Optional[Path] = None
+    env: Optional[dict[str, str]] = None
+
+
+MODULES = [
+    Module(
+        name="backend",
                 break
             chunk_path = logd_path.with_name(f"{stem}-part{index:03d}.logd")
             chunk_path.write_bytes(data)
@@ -130,19 +138,21 @@ MODULES = [
         clean_cmd=["rm", "-rf", "build"],
         build_dir=ROOT / "compliance" / "build",
     ),
-    Module(
-        name="v2-market-stream",
-        language="Ruby",
-        dir=ROOT / "v2" / "services",
-        build_cmd=["ruby", "-c", "market_stream.rb"],
-        clean_cmd=["echo", "Ruby has no build artifacts to clean"],
-        build_dir=None,
     ),
-    Module(
-        name="nfc-scanner",
-        language="Lua",
-        dir=ROOT / "frailbox" / "nfc",
-        build_cmd=["luac", "-p", "scanner.lua"],
+]
+
+
+def module_by_name(name: str) -> Module:
+    for m in MODULES:
+        if m.name == name:
+        build_dir=None,
+    raise ValueError(f"Unknown module: {name}")
+
+
+
+def run_module(module: Module, *, release: bool = False) -> dict:
+    start = time.time()
+    env = os.environ.copy()
         clean_cmd=["echo", "Lua has no build artifacts to clean"],
         build_dir=None,
     ),
@@ -172,12 +182,13 @@ ENCRYPTLY_BINARIES = {
     "macos-x64": ENCRYPTLY_DIR / "macos-x64" / "encryptly",
     "windows-x64": ENCRYPTLY_DIR / "windows-x64" / "encryptly.exe",
     "windows-arm64": ENCRYPTLY_DIR / "windows-arm64" / "encryptly.exe",
-}
-LEGACY_ENCRYPTLY_BIN = ENCRYPTLY_DIR / "encryptly"
+    }
 
 
-def _normalize_arch(machine: str) -> Optional[str]:
-    machine = machine.lower()
+
+def run_encryptly_archive(logd_path: Path, metadata_path: Path, password: str) -> None:
+    """Run encryptly to create an encrypted archive from the diagnostic log and metadata."""
+    try:
     if machine in {"x86_64", "amd64"}:
         return "x64"
     if machine in {"aarch64", "arm64"}:
@@ -213,12 +224,13 @@ def get_encryptly_bin() -> Optional[Path]:
 
     if LEGACY_ENCRYPTLY_BIN.exists():
         return LEGACY_ENCRYPTLY_BIN
+        print(f"[!] encryptly failed: {e}")
 
-    return None
 
 
-def encryptly_platform_help() -> str:
-    detected = detect_encryptly_platform() or "unsupported"
+def write_diagnostics(results: list[dict], commit_id: str) -> None:
+    logd_path, metadata_path, _ = diagnostic_paths_for_commit()
+    password = getpass.getpass("Enter password for encryptly: ")
     available = ", ".join(sorted(ENCRYPTLY_BINARIES))
     return f"detected {detected}; available: {available}"
 
@@ -245,36 +257,58 @@ def check_encryptly_runs(timeout: int = 600) -> tuple[bool, str]:
                 str(workspace),
                 "--max-file-size",
                 "32000",
-            ],
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+    split_diagnostic_logd(logd_path)
+
+
+
+def build_all(modules: list[Module], *, release: bool = False) -> list[dict]:
+    results = []
+    for module in modules:
         # if result.returncode != 0:
         #     output = result.stderr.strip() or result.stdout.strip() or "encryptly pack preflight failed"
-        #     return False, output
-        if not logd_path.exists():
-            return False, "encryptly preflight completed without creating a .logd"
-        return True, "encryptly preflight passed"
-    except subprocess.TimeoutExpired:
-        return False, f"encryptly preflight TIMEOUT ({timeout}s)"
+    return results
+
+
+
+def clean_all(modules: list[Module]) -> None:
+    for module in modules:
+        print(f"Cleaning {module.name} ...")
     except Exception as e:
         return False, str(e)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
+            print(f"[!] Failed to clean {module.name}: {e}")
 
-class Colors:
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    RED = "\033[91m"
-    CYAN = "\033[96m"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build system for TentOfTrials")
+    parser.add_argument("--module", type=str, help="Comma-separated list of modules to build")
     BOLD = "\033[1m"
     RESET = "\033[0m"
     GRAY = "\033[90m"
+    return parser.parse_args()
 
-def color(text: str, code: str) -> str:
-    if not sys.stdout.isatty():
+
+
+def _generate_build_reference_content() -> str:
+    lines: list[str] = []
+    lines.append("# Build Module Reference\n")
+    lines.append("> Auto-generated by `tools/generate_build_reference.py`. Do not edit manually.\n")
+    lines.append("\n")
+    lines.append("## Modules\n")
+    lines.append("\n")
+    lines.append("| Module | Language | Directory | Build Command | Clean Command | Build Artifact Directory |")
+    lines.append("|--------|----------|-----------|---------------|---------------|------------------------|")
+        build_cmd = " ".join(m.build_cmd)
+        clean_cmd = " ".join(m.clean_cmd)
+        build_dir_str = str(m.build_dir) if m.build_dir else ""
+        lines.append(f"| {m.name} | {m.language} | `{m.dir}` | `{build_cmd}` | `{clean_cmd}` | `{build_dir_str}` |")
+    lines.append("\n")
+    lines.append("## CLI Usage\n")
+    lines.append("\n")
+    lines.append("Build specific modules:\n")
+    lines.append("
         return text
     return f"{code}{text}{Colors.RESET}"
 
