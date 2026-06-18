@@ -653,4 +653,26 @@ function getRating(value: number, goodThreshold: number, poorThreshold: number):
 if (DEFAULT_CONFIG.enabled) {
   initTelemetry();
   initWebVitalsTracking();
+// Add telemetry export for error logging
+export const telemetry = {
+  logError: (errorData: { message: string; stack?: string; component?: string }): void => {
+    const event: TelemetryEvent = {
+      id: uuidv4(),
+      type: 'error',
+      timestamp: Date.now(),
+      sessionId: getSessionId(),
+      properties: {
+        errorMessage: errorData.message,
+        errorStack: errorData.stack,
+        componentStack: errorData.component,
+      },
+      error: {
+        message: errorData.message,
+        stack: errorData.stack,
+        component: errorData.component,
+      },
+    };
+    queueEvent(event);
+  },
+};
 }
