@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
 import argparse
 import datetime
 import getpass
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -18,6 +20,8 @@ ROOT = Path(__file__).resolve().parent
 DIAGNOSTIC_DIR = ROOT / "diagnostic"
 DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
 ENCRYPTLY_BLOCKER_MESSAGE = "encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly."
+TIMING_STATUS_SUCCESS = "success"
+TIMING_STATUS_FAILED = "failed"
 
 
 def current_commit_id() -> str:
@@ -70,12 +74,27 @@ def split_diagnostic_logd(logd_path: Path, chunk_size: int = DIAGNOSTIC_CHUNK_SI
 
 
 @dataclass
-class Module:
-    name: str
+    env: Optional[dict[str, str]] = None
+
+
+@dataclass
+class ModuleTiming:
+    module: str
     language: str
-    dir: Path
-    build_cmd: list[str]
-    clean_cmd: list[str]
+    command: str
+    started_at: str
+    finished_at: str
+    elapsed_seconds: float
+    exit_code: int
+    status: str
+
+
+module_timings: list[ModuleTiming] = []
+
+
+MODULES = [
+    Module(
+        name="backend",
     build_dir: Optional[Path] = None
     env: Optional[dict[str, str]] = None
 
@@ -144,31 +163,78 @@ MODULES = [
         dir=ROOT / "frailbox" / "nfc",
         build_cmd=["luac", "-p", "scanner.lua"],
         clean_cmd=["echo", "Lua has no build artifacts to clean"],
-        build_dir=None,
-    ),
-    Module(
-        name="openapi-haskell",
-        language="Haskell",
-        dir=ROOT / "docs" / "openapi",
+    env = os.environ.copy()
+    if mod.env:
+        env.update(mod.env)
+    command_str = " ".join(cmd)
+
+    if clean:
+        print(f"  Cleaning {mod.name}...")
         build_cmd=["ghc", "-fno-code", "Types.hs", "Server.hs", "Validate.hs", "Generate.hs"],
         clean_cmd=["rm", "-f", "*.hi", "*.o", "*.hie"],
         build_dir=None,
     ),
-    Module(
-        name="openapi-tools",
-        language="Lua",
-        dir=ROOT / "tools",
-        build_cmd=["luac", "-p", "openapi_diff.lua", "openapi_mock.lua", "openapi_pact.lua"],
-        clean_cmd=["echo", "Nothing to clean"],
-        build_dir=None,
-    ),
-]
+        except subprocess.CalledProcessError:
+            print(f"  Warning: clean failed for {mod.name}")
 
-ENCRYPTLY_DIR = ROOT / "tools" / "encryptly"
-ENCRYPTLY_BINARIES = {
-    "linux-x64": ENCRYPTLY_DIR / "linux-x64" / "encryptly",
-    "linux-arm64": ENCRYPTLY_DIR / "linux-arm64" / "encryptly",
-    "macos-arm64": ENCRYPTLY_DIR / "macos-arm64" / "encryptly",
+    start_time = time.time()
+    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    try:
+        subprocess.run(cmd, cwd=str(mod.dir), env=env, check=True)
+    except subprocess.CalledProcessError as e:
+        end_time = time.time()
+        finished_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        elapsed = end_time - start_time
+        timing = ModuleTiming(
+            module=mod.name,
+            language=mod.language,
+            command=command_str,
+            started_at=started_at,
+            finished_at=finished_at,
+            elapsed_seconds=elapsed,
+            exit_code=e.returncode,
+            status=TIMING_STATUS_FAILED,
+        )
+        module_timings.append(timing)
+        print(f"  Build failed for {mod.name}: {e}")
+        return False
+    except FileNotFoundError as e:
+        end_time = time.time()
+        finished_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        elapsed = end_time - start_time
+        timing = ModuleTiming(
+            module=mod.name,
+            language=mod.language,
+            command=command_str,
+            started_at=started_at,
+            finished_at=finished_at,
+            elapsed_seconds=elapsed,
+            exit_code=-1,
+            status=TIMING_STATUS_FAILED,
+        )
+        module_timings.append(timing)
+        print(f"  Build failed for {mod.name}: command not found ({e})")
+        return False
+
+    end_time = time.time()
+    finished_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    elapsed = end_time - start_time
+    timing = ModuleTiming(
+        module=mod.name,
+        language=mod.language,
+        command=command_str,
+        started_at=started_at,
+        finished_at=finished_at,
+        elapsed_seconds=elapsed,
+        exit_code=0,
+        status=TIMING_STATUS_SUCCESS,
+    )
+    module_timings.append(timing)
+    return True
+
+
+def encrypt_diagnostic_logd(logd_path: Path, password: str) -> None:
     "macos-x64": ENCRYPTLY_DIR / "macos-x64" / "encryptly",
     "windows-x64": ENCRYPTLY_DIR / "windows-x64" / "encryptly.exe",
     "windows-arm64": ENCRYPTLY_DIR / "windows-arm64" / "encryptly.exe",
@@ -210,12 +276,13 @@ def get_encryptly_bin() -> Optional[Path]:
         binary = ENCRYPTLY_BINARIES.get(target)
         if binary is not None and binary.exists():
             return binary
+    parser.add_argument("--module", dest="modules", help="Comma-separated list of modules to build")
+    parser.add_argument("--release", action="store_true", help="Release mode (Rust only)")
+    parser.add_argument("--diagnostic-password", default=None, help="Password for diagnostic log encryption")
+    parser.add_argument("--timings-json", default=None, help="Write timing array to a JSON file")
+    args = parser.parse_args()
 
-    if LEGACY_ENCRYPTLY_BIN.exists():
-        return LEGACY_ENCRYPTLY_BIN
-
-    return None
-
+    if args.clean:
 
 def encryptly_platform_help() -> str:
     detected = detect_encryptly_platform() or "unsupported"
@@ -245,20 +312,22 @@ def check_encryptly_runs(timeout: int = 600) -> tuple[bool, str]:
                 str(workspace),
                 "--max-file-size",
                 "32000",
-            ],
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        "builder": getpass.getuser(),
+        "platform": platform.platform(),
+        "results": {},
+        "module_timings": [],
+    }
+
+    for mod in selected_modules:
         # if result.returncode != 0:
         #     output = result.stderr.strip() or result.stdout.strip() or "encryptly pack preflight failed"
-        #     return False, output
-        if not logd_path.exists():
-            return False, "encryptly preflight completed without creating a .logd"
-        return True, "encryptly preflight passed"
-    except subprocess.TimeoutExpired:
-        return False, f"encryptly preflight TIMEOUT ({timeout}s)"
+        else:
+            metadata["results"][mod.name] = "success"
+
+    metadata["module_timings"] = [t.__dict__ for t in module_timings]
+    metadata_path.write_text(json.dumps(metadata, indent=2))
+
+    # Encrypt diagnostic log
     except Exception as e:
         return False, str(e)
     finally:
@@ -269,12 +338,29 @@ class Colors:
     YELLOW = "\033[93m"
     RED = "\033[91m"
     CYAN = "\033[96m"
-    BOLD = "\033[1m"
-    RESET = "\033[0m"
-    GRAY = "\033[90m"
+    else:
+        print(f"Diagnostic log written to {logd_path}")
 
-def color(text: str, code: str) -> str:
-    if not sys.stdout.isatty():
+    # Print sorted slowest-first timing summary
+    if module_timings:
+        print("\nBuild timing summary (slowest first):")
+        sorted_timings = sorted(module_timings, key=lambda t: t.elapsed_seconds, reverse=True)
+        for t in sorted_timings:
+            status_str = "OK" if t.status == TIMING_STATUS_SUCCESS else "FAIL"
+            print(f"  {t.module:15} {t.elapsed_seconds:8.3f}s  [{status_str}]")
+
+    # Write timings to caller-specified JSON file
+    if args.timings_json:
+        timings_data = {
+            "module_timings": [t.__dict__ for t in module_timings],
+        }
+        timings_path = Path(args.timings_json)
+        timings_path.write_text(json.dumps(timings_data, indent=2))
+        print(f"Timing report written to {timings_path}")
+
+
+if __name__ == "__main__":
+    main()
         return text
     return f"{code}{text}{Colors.RESET}"
 
