@@ -8,76 +8,70 @@
 +/// Configuration for the Tent of Trials backend, loaded from environment variables.
 +#[derive(Debug, Clone, PartialEq)]
 +pub struct Config {
-+    /// Host address to bind to (default: 127.0.0.1)
++    /// The host address to bind to.
 +    pub host: IpAddr,
-+    /// Port to listen on (default: 8080)
++    /// The port to listen on.
 +    pub port: u16,
-+    /// Log level for the application (default: info)
++    /// The log level for the application.
 +    pub log_level: String,
-+    /// Enable experimental features (default: false)
++    /// Whether experimental features are enabled.
 +    pub enable_experimental: bool,
 +}
 +
 +impl Config {
 +    /// Load configuration from environment variables with safe defaults.
 +    ///
-+    /// Supported environment variables:
-+    /// - `TOT_BACKEND_HOST`: IP address to bind to (default: 127.0.0.1)
-+    /// - `TOT_BACKEND_PORT`: Port to listen on (default: 8080)
-+    /// - `TOT_LOG_LEVEL`: Log level (default: info)
-+    /// - `TOT_ENABLE_EXPERIMENTAL`: Enable experimental features (default: false)
++    /// # Environment Variables
++    ///
++    /// - `TOT_BACKEND_HOST` — IP address to bind to (default: `127.0.0.1`)
++    /// - `TOT_BACKEND_PORT` — Port to listen on (default: `8080`)
++    /// - `TOT_LOG_LEVEL` — Log level: `trace`, `debug`, `info`, `warn`, `error` (default: `info`)
++    /// - `TOT_ENABLE_EXPERIMENTAL` — Enable experimental features: `true` or `false` (default: `false`)
 +    ///
 +    /// # Errors
 +    ///
 +    /// Returns an error if:
 +    /// - `TOT_BACKEND_HOST` is set to an invalid IP address
-+    /// - `TOT_BACKEND_PORT` is set to an invalid port number (not in range 1-65535)
-+    /// - `TOT_ENABLE_EXPERIMENTAL` is set to an invalid boolean value
++    /// - `TOT_BACKEND_PORT` is set to an invalid port number (not in range 1–65535)
++    /// - `TOT_ENABLE_EXPERIMENTAL` is set to a value that is not `true` or `false`
 +    pub fn from_env() -> Result<Self, String> {
 +        let host = match env::var("TOT_BACKEND_HOST") {
 +            Ok(val) => val
 +                .parse::<IpAddr>()
-+                .map_err(|_| format!("Invalid TOT_BACKEND_HOST: '{}' is not a valid IP address", val))?,
-+            Err(env::VarError::NotPresent) => IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-+            Err(e) => return Err(format!("Failed to read TOT_BACKEND_HOST: {}", e)),
++                .map_err(|_| format!("Invalid TOT_BACKEND_HOST: '{}'. Must be a valid IP address.", val))?,
++            Err(_) => IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
 +        };
 +
 +        let port = match env::var("TOT_BACKEND_PORT") {
 +            Ok(val) => {
 +                let port_num: u16 = val
 +                    .parse()
-+                    .map_err(|_| format!("Invalid TOT_BACKEND_PORT: '{}' is not a valid port number", val))?;
++                    .map_err(|_| format!("Invalid TOT_BACKEND_PORT: '{}'. Must be a valid port number (1-65535).", val))?;
 +                if port_num == 0 {
 +                    return Err(format!(
-+                        "Invalid TOT_BACKEND_PORT: '{}' is not a valid port number (must be 1-65535)",
++                        "Invalid TOT_BACKEND_PORT: '{}'. Port must be between 1 and 65535.",
 +                        val
 +                    ));
 +                }
 +                port_num
 +            }
-+            Err(env::VarError::NotPresent) => 8080,
-+            Err(e) => return Err(format!("Failed to read TOT_BACKEND_PORT: {}", e)),
++            Err(_) => 8080,
 +        };
 +
-+        let log_level = match env::var("TOT_LOG_LEVEL") {
-+            Ok(val) => val,
-+            Err(env::VarError::NotPresent) => "info".to_string(),
-+            Err(e) => return Err(format!("Failed to read TOT_LOG_LEVEL: {}", e)),
-+        };
++        let log_level = env::var("TOT_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
 +
 +        let enable_experimental = match env::var("TOT_ENABLE_EXPERIMENTAL") {
 +            Ok(val) => match val.to_lowercase().as_str() {
-+                "true" | "1" | "yes" | "on" => true,
-+                "false" | "0" | "no" | "off" => false,
++                "true" | "1" => true,
++                "false" | "0" => false,
 +                _ => {
 +                    return Err(format!(
-+                        "Invalid TOT_ENABLE_EXPERIMENTAL: '{}' is not a valid boolean value (expected true/false, 1/0, yes/no, on/off)",
++                        "Invalid TOT_ENABLE_EXPERIMENTAL: '{}'. Must be 'true' or 'false'.",
 +                        val
 +                    ))
 +                }
 +            },
-+            Err(env::VarError::NotPresent) => false,
-+            Err(e) => return Err(format!("Failed to read TOT_ENABLE_EXPERIMENTAL: {}", e)),
++            Err(_) => false,
 +        };
 +
 +        Ok(Config {
@@ -88,7 +82,7 @@
 +        })
 +    }
 +
-+    /// Returns the socket address derived from host and port.
++    /// Returns the socket address derived from the host and port.
 +    pub fn socket_addr(&self) -> SocketAddr {
 +        SocketAddr::new(self.host, self.port)
 +    }
@@ -137,4 +131,20 @@
 +        env::set_var("TOT_BACKEND_PORT", "0");
 +        let result = Config::from_env();
 +        assert!(result.is_err());
-+        assert
++        assert!(result.unwrap_err().contains("TOT_BACKEND_PORT"));
++    }
++
++    #[test]
++    fn test_invalid_port_negative() {
++        clear_env();
++        env::set_var("TOT_BACKEND_PORT", "-5");
++        let result = Config::from_env();
++        assert!(result.is_err());
++        assert!(result.unwrap_err().contains("TOT_BACKEND_PORT"));
++    }
++
++    #[test]
++    fn test_invalid_port_string() {
++        clear_env();
++        env::set_var("TOT_BACKEND_PORT", "abc");
++        let result
