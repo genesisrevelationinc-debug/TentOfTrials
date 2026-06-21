@@ -379,4 +379,152 @@ export function useWebSocket(options: WSOptions) {
     unsubscribe,
     isConnected: wsRef.current?.readyState === WebSocket.OPEN,
   };
+import { useEffect, useRef, useState, useCallback } from 'react';
+
+export type WebSocketState = 'connecting' | 'open' | 'closing' | 'closed' | 'reconnecting';
+
+export interface UseWebSocketOptions {
+  url: string;
+  protocols?: string | string[];
+  reconnect?: boolean;
+  maxReconnectDelay?: number;
+  initialReconnectDelay?: number;
+  onOpen?: (event: Event) => void;
+  onMessage?: (event: MessageEvent) => void;
+  onError?: (event: Event) => void;
+  onClose?: (event: CloseEvent) => void;
+}
+
+export interface UseWebSocketReturn {
+  readyState: WebSocketState;
+  send: (data: string | ArrayBufferLike | Blob | ArrayBufferView) => void;
+  close: (code?: number, reason?: string) => void;
+  reconnectAttempts: number;
+}
+
+/**
+ * Calculate the next reconnect delay with exponential backoff and jitter.
+ * @param attempt - The current reconnect attempt number (0-indexed)
+ * @param initialDelay - The initial delay in ms
+ * @param maxDelay - The maximum delay in ms
+ * @returns The delay in milliseconds
+ */
+export function calculateBackoffDelay(
+  attempt: number,
+  initialDelay: number = 1000,
+  maxDelay: number = 30000
+): number {
+  // Exponential backoff: initialDelay * 2^attempt
+  const exponentialDelay = initialDelay * Math.pow(2, attempt);
+  
+  // Cap at maxDelay
+  const cappedDelay = Math.min(exponentialDelay, maxDelay);
+  
+  // Add jitter: random value between 0 and 50% of the delay
+  const jitter = Math.random() * (cappedDelay / 2);
+  
+  return Math.min(cappedDelay + jitter, maxDelay);
+}
+
+export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
+  const {
+    url,
+    protocols,
+    reconnect = true,
+    maxReconnectDelay = 30000,
+    initialReconnectDelay = 1000,
+    onOpen,
+    onMessage,
+    onError,
+    onClose,
+  } = options;
+
+  const [readyState, setReadyState] = useState<WebSocketState>('connecting');
+  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isManualCloseRef = useRef(false);
+
+  const clearReconnectTimeout = useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+  }, []);
+
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+
+    setReadyState('connecting');
+    
+    const ws = new WebSocket(url, protocols);
+    wsRef.current = ws;
+
+    ws.onopen = (event: Event) => {
+      setReadyState('open');
+      setReconnectAttempts(0);
+      onOpen?.(event);
+    };
+
+    ws.onmessage = (event: MessageEvent) => {
+      onMessage?.(event);
+    };
+
+    ws.onerror = (event: Event) => {
+      onError?.(event);
+    };
+
+    ws.onclose = (event: CloseEvent) => {
+      setReadyState('closed');
+      onClose?.(event);
+
+      if (!isManualCloseRef.current && reconnect) {
+        const delay = calculateBackoffDelay(reconnectAttempts, initialReconnectDelay, maxReconnectDelay);
+        setReadyState('reconnecting');
+        setReconnectAttempts((prev) => prev + 1);
+
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connect();
+        }, delay);
+      }
+    };
+  }, [url, protocols, reconnect, maxReconnectDelay, initialReconnectDelay, onOpen, onMessage, onError, onClose, reconnectAttempts]);
+
+  const send = useCallback((data: string | ArrayBufferLike | Blob | ArrayBufferView) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(data);
+    } else {
+      console.warn('WebSocket is not open. Message not sent.');
+    }
+  }, []);
+
+  const close = useCallback((code?: number, reason?: string) => {
+    isManualCloseRef.current = true;
+    clearReconnectTimeout();
+    wsRef.current?.close(code, reason);
+  }, [clearReconnectTimeout]);
+
+  useEffect(() => {
+    isManualCloseRef.current = false;
+    connect();
+
+    return () => {
+      isManualCloseRef.current = true;
+      clearReconnectTimeout();
+      wsRef.current?.close();
+    };
+  }, [connect, clearReconnectTimeout]);
+
+  return {
+    readyState,
+    send,
+    close,
+    reconnectAttempts,
+  };
+}
+
+export default useWebSocket;
 }
