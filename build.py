@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
 import argparse
 import datetime
 import getpass
@@ -7,22 +8,24 @@ import json
 import os
 import platform
 import shutil
+import shutil
 import subprocess
 import sys
+import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 ROOT = Path(__file__).resolve().parent
 DIAGNOSTIC_DIR = ROOT / "diagnostic"
 DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
+DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
 ENCRYPTLY_BLOCKER_MESSAGE = "encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly."
 
+VALID_MODULE_NAMES = frozenset(["backend", "frontend", "market", "frailbox", "engine", "compliance", "v2", "scans", "openapi", "openapi-tools"])
 
 def current_commit_id() -> str:
     """Return the first 4 bytes (8 hex chars) of HEAD for stable per-commit diagnostics."""
-    try:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "HEAD"],
             cwd=str(ROOT),
@@ -90,41 +93,95 @@ MODULES = [
         env={"CARGO_TERM_COLOR": "always"},
     ),
     Module(
-        name="frontend",
-        language="TypeScript",
-        dir=ROOT / "frontend",
-        build_cmd=["npm", "run", "build"],
-        clean_cmd=["rm", "-rf", "node_modules", "dist"],
-        build_dir=ROOT / "frontend" / "dist",
+        build_dir=ROOT / "compliance" / "build",
+    ),
+    Module(
+        name="v2",
+        language="Ruby",
+        dir=ROOT / "v2",
+        build_cmd=["ruby", "build.rb"],
         env={"NODE_ENV": "production"},
+        build_dir=ROOT / "v2" / "build",
     ),
     Module(
-        name="market",
-        language="Go",
-        dir=ROOT / "market",
-        build_cmd=["go", "build", "-o", "market", "."],
+        name="scans",
+        language="Lua",
+        dir=ROOT / "scans",
+        build_cmd=["lua", "build.lua"],
         clean_cmd=["rm", "-f", "market"],
-        build_dir=ROOT / "market" / "market",
+        build_dir=ROOT / "scans" / "build",
     ),
     Module(
-        name="frailbox",
-        language="C",
-        dir=ROOT / "frailbox",
+        name="openapi",
+        language="Haskell",
+        dir=ROOT / "openapi",
+        build_cmd=["cabal", "build"],
         build_cmd=["make"],
-        clean_cmd=["make", "distclean"],
-        build_dir=ROOT / "frailbox" / "frailbox",
+        build_dir=ROOT / "openapi" / "dist",
     ),
     Module(
-        name="engine",
-        language="C++",
+        name="openapi-tools",
+        language="Lua",
+        dir=ROOT / "openapi-tools",
+        build_cmd=["lua", "build.lua"],
         dir=ROOT / "frailbox" / "engine",
         build_cmd=["cmake", "--build", "build"],
-        clean_cmd=["rm", "-rf", "build"],
-        build_dir=ROOT / "frailbox" / "engine" / "build" / "trial-engine",
     ),
-    Module(
-        name="compliance",
-        language="Java",
+]
+
+def parse_module_selection(raw: str) -> list[str]:
+    """Parse a comma-separated module string into a list of stripped module names.
+
+    >>> parse_module_selection("backend, frontend")
+    ['backend', 'frontend']
+    >>> parse_module_selection("backend")
+    ['backend']
+    >>> parse_module_selection("backend,frontend, market")
+    ['backend', 'frontend', 'market']
+    """
+    if not raw or not raw.strip():
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def validate_module_selection(selections: list[str]) -> tuple[list[str], list[str]]:
+    """Validate a list of module names against known modules.
+
+    Returns (valid_names, invalid_names).
+    """
+    invalid = [name for name in selections if name not in VALID_MODULE_NAMES]
+    valid = [name for name in selections if name in VALID_MODULE_NAMES]
+    return valid, invalid
+
+
+def format_valid_modules() -> str:
+    """Return a formatted string of valid module names."""
+    return ", ".join(sorted(VALID_MODULE_NAMES))
+
+
+def validate_and_exit(selections: list[str]) -> list[str]:
+    """Validate module selections and exit with error if any are invalid.
+
+    Returns the validated (and deduplicated while preserving order) list.
+    """
+    valid, invalid = validate_module_selection(selections)
+    if invalid:
+        print(f"Error: Invalid module name(s): {', '.join(invalid)}", file=sys.stderr)
+        print(f"Valid modules are: {format_valid_modules()}", file=sys.stderr)
+        sys.exit(1)
+    # deduplicate while preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for name in selections:
+        if name not in seen:
+            seen.add(name)
+            deduped.append(name)
+    return deduped
+
+
+def build_module(module: Module, release: bool = False) -> bool:
+    """Build a single module. Returns True on success."""
+    print(f"Building {module.name} ({module.language})...")
         dir=ROOT / "compliance",
         build_cmd=["javac", "-d", "build", "ComplianceAuditor.java"],
         clean_cmd=["rm", "-rf", "build"],
@@ -245,33 +302,49 @@ def check_encryptly_runs(timeout: int = 600) -> tuple[bool, str]:
                 str(workspace),
                 "--max-file-size",
                 "32000",
-            ],
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+    parser.add_argument("--module", type=str, help="Comma-separated module names to build")
+    parser.add_argument("--release", action="store_true", help="Release mode (Rust only)")
+    parser.add_argument("--clean", action="store_true", help="Clean all artifacts")
+    parser.add_argument("--list-modules", action="store_true", help="List available modules and exit")
+    parser.add_argument(
+        "--diagnostic-password",
+        type=str,
         # if result.returncode != 0:
         #     output = result.stderr.strip() or result.stdout.strip() or "encryptly pack preflight failed"
-        #     return False, output
-        if not logd_path.exists():
-            return False, "encryptly preflight completed without creating a .logd"
-        return True, "encryptly preflight passed"
-    except subprocess.TimeoutExpired:
-        return False, f"encryptly preflight TIMEOUT ({timeout}s)"
+    )
+    args = parser.parse_args()
+
+    if args.list_modules:
+        print("Available modules:")
+        for mod in MODULES:
+            print(f"  {mod.name:<15} ({mod.language})")
+        sys.exit(0)
+
+    selected_modules: list[str] = []
+    if args.module:
+        raw_selections = parse_module_selection(args.module)
+        if not raw_selections:
+            print("Error: --module flag provided but no module names were given.", file=sys.stderr)
+            print(f"Valid modules are: {format_valid_modules()}", file=sys.stderr)
+            sys.exit(1)
+        selected_modules = validate_and_exit(raw_selections)
+
+    password = args.diagnostic_password
+    if password is None:
+        password = getpass.getpass("Enter diagnostic password: ")
     except Exception as e:
         return False, str(e)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
+        sys.exit(0)
 
-class Colors:
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    RED = "\033[91m"
-    CYAN = "\033[96m"
-    BOLD = "\033[1m"
-    RESET = "\033[0m"
-    GRAY = "\033[90m"
+    modules_to_build = MODULES
+    if selected_modules:
+        selected_set = set(selected_modules)
+        modules_to_build = [m for m in MODULES if m.name in selected_set]
+
+    success = True
+    for module in modules_to_build:
 
 def color(text: str, code: str) -> str:
     if not sys.stdout.isatty():
