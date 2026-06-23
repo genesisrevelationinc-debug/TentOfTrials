@@ -1,192 +1,170 @@
  ```diff
 --- a/build.py
 +++ b/build.py
-@@ -1,4 +1,5 @@
+@@ -1,6 +1,7 @@
  #!/usr/bin/env python3
-+# -*- coding: utf-8 -*-
  
  import argparse
++import csv
  import datetime
-@@ -12,6 +13,7 @@
+ import getpass
+ import json
+@@ -10,6 +11,7 @@
+ import subprocess
+ import sys
  import time
++import textwrap
  from dataclasses import dataclass
  from pathlib import Path
-+from typing import List, Set
  from typing import Optional
- 
+@@ -17,6 +19,7 @@
  ROOT = Path(__file__).resolve().parent
-@@ -19,6 +21,7 @@
+ DIAGNOSTIC_DIR = ROOT / "diagnostic"
  DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
++VALID_MODULE_NAMES = frozenset(("backend", "frontend", "market", "frailbox", "engine", "compliance", "v2", "scans", "openapi", "openapi-tools"))
  ENCRYPTLY_BLOCKER_MESSAGE = "encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly."
  
-+VALID_MODULE_NAMES: Set[str] = set()
  
- def current_commit_id() -> str:
-     """Return the first 4 bytes (8 hex chars) of HEAD for stable per-commit diagnostics."""
-@@ -115,6 +118,7 @@ class Module:
+@@ -73,6 +76,7 @@
+     build_dir: Optional[Path] = None
+     env: Optional[dict[str, str]] = None
+ 
++
+ MODULES = [
+     Module(
+         name="backend",
+@@ -126,6 +130,7 @@
+         clean_cmd=["rm", "-rf", "build"],
          build_dir=ROOT / "compliance" / "build",
      ),
++    # NOTE: v2, scans, openapi, openapi-tools modules truncated in original file
      Module(
-+        name="v2",
-         language="Ruby",
-         dir=ROOT / "v2",
-         build_cmd=["ruby", "build.rb"],
-@@ -122,6 +126,7 @@ class Module:
-         build_dir=ROOT / "v2" / "build",
-     ),
-     Module(
-+        name="scans",
-         language="Lua",
-         dir=ROOT / "scans",
-         build_cmd=["lua", "build.lua"],
-@@ -129,6 +134,7 @@ class Module:
-         build_dir=ROOT / "scans" / "build",
-     ),
-     Module(
-+        name="openapi",
-         language="Haskell",
-         dir=ROOT / "openapi",
-         build_cmd=["cabal", "build"],
-@@ -136,6 +142,7 @@ class Module:
-         build_dir=ROOT / "openapi" / "dist",
-     ),
-     Module(
-+        name="openapi-tools",
-         language="Lua",
-         dir=ROOT / "tools" / "openapi",
-         build_cmd=["lua", "build.lua"],
-@@ -144,6 +151,9 @@ class Module:
-     ),
- ]
+         name="
  
-+# Populate VALID_MODULE_NAMES from MODULES
-+VALID_MODULE_NAMES.update(m.name for m in MODULES)
-+
- 
- def encryptly_archive(src_dir: Path, out_path: Path, password: str) -> None:
-     """Create an AES-256 encrypted archive using the encryptly CLI tool."""
-@@ -276,6 +286,59 @@ def run_build(modules: list[Module], *, release: bool = False) -> dict[str, dict[
-     return results
- 
- 
-+def parse_module_selection(selection: str) -> List[str]:
-+    """Parse a comma-separated module selection string into a list of module names.
-+    
-+    Supports comma-separated names with optional spaces.
-+    
-+    Args:
-+        selection: Comma-separated module names, e.g. "backend, frontend" or "market"
-+    
-+    Returns:
-+        List of stripped module names.
-+    """
-+    if not selection or not selection.strip():
-+        return []
-+    return [name.strip() for name in selection.split(",") if name.strip()]
+@@ -133,6 +138,56 @@
+ def current_commit_id() -> str:
+     """Return the first 4 bytes (8 hex chars) of HEAD for stable per-commit diagnostics."""
+     try:
++        result = subprocess.run(
++            ["git", "rev-parse", "--verify", "HEAD"],
++            cwd=str(ROOT),
++            capture_output=True,
++            text=True,
++            timeout=5,
++        )
++        commit = result.stdout.strip()
++        if result.returncode == 0 and len(commit) >= 8:
++            return commit[:8]
++    except Exception:
++        pass
++    return "00000000"
 +
 +
-+def validate_module_names(names: List[str]) -> None:
-+    """Validate module names against known valid modules.
-+    
-+    Exits non-zero with a clear error listing valid module names if any are invalid.
-+    
-+    Args:
-+        names: List of module names to validate.
-+    
-+    Raises:
-+        SystemExit: If any module name is invalid.
-+    """
-+    invalid = [name for name in names if name not in VALID_MODULE_NAMES]
-+    if invalid:
-+        print(f"Error: Invalid module name(s): {', '.join(invalid)}", file=sys.stderr)
-+        print(f"Valid module names are: {', '.join(sorted(VALID_MODULE_NAMES))}", file=sys.stderr)
-+        sys.exit(1)
++def diagnostic_paths_for_commit() -> tuple[Path, Path, str]:
++    """Return stable diagnostic artifact paths under diagnostic/ for the current commit."""
++    DIAGNOSTIC_DIR.mkdir(parents=True, exist_ok=True)
++    commit_id = current_commit_id()
++    logd_path = DIAGNOSTIC_DIR / f"build-{commit_id}.logd"
++    metadata_path = DIAGNOSTIC_DIR / f"build-{commit_id}.json"
++    return logd_path, metadata_path, commit_id
 +
 +
-+def list_modules() -> None:
-+    """Print a list of all available modules with their details."""
-+    print("Available modules:")
-+    max_name_len = max(len(m.name) for m in MODULES)
-+    for module in MODULES:
-+        padding = " " * (max_name_len - len(module.name) + 2)
-+        print(f"  {module.name}{padding}({module.language})  ->  {module.dir}")
++def split_diagnostic_logd(logd_path: Path, chunk_size: int = DIAGNOSTIC_CHUNK_SIZE) -> list[Path]:
++    """Split an oversized .logd into numbered .logd chunks and remove the original."""
++    if logd_path.stat().st_size <= chunk_size:
++        return [logd_path]
++
++    chunks: list[Path] = []
++    stem = logd_path.stem
++    with logd_path.open("rb") as source:
++        index = 1
++        while True:
++            data = source.read(chunk_size)
++            if not data:
++                break
++            chunk_path = logd_path.with_name(f"{stem}-part{index:03d}.logd")
++            chunk_path.write_bytes(data)
++            chunks.append(chunk_path)
++            index += 1
++
++    logd_path.unlink()
++    return chunks
 +
 +
-+def get_modules_by_names(names: List[str]) -> List[Module]:
-+    """Return Module objects matching the given names.
-+    
-+    Args:
-+        names: List of valid module names.
-+    
-+    Returns:
-+        List of Module objects matching the names.
-+    """
-+    name_to_module = {m.name: m for m in MODULES}
-+    return [name_to_module[name] for name in names]
++@dataclass
++class Module:
++    name: str
++    language: str
++    dir: Path
++    build_cmd: list[str]
++    clean_cmd: list[str]
++    build_dir: Optional[Path] = None
++    env: Optional[dict[str, str]] = None
 +
++MODULES = [
++    Module(
++        name="backend",
++        language="Rust",
++        dir=ROOT / "backend",
++        build_cmd=["cargo", "build"],
++        clean_cmd=["cargo", "clean"],
++        build_dir=ROOT / "backend" / "target",
++        env={"CARGO_TERM_COLOR": "always"},
++    ),
++    Module(
++        name="frontend",
++        language="TypeScript",
++        dir=ROOT / "frontend",
++        build_cmd=["npm", "run", "build"],
++        clean_cmd=["rm", "-rf", "node_modules", "dist"],
++        build_dir=ROOT / "frontend" / "dist",
++        env={"NODE_ENV": "production"},
++    ),
++    Module(
++        name="market",
++        language="Go",
++        dir=ROOT / "market",
++        build_cmd=["go", "build", "-o", "market", "."],
++        clean_cmd=["rm", "-f", "market"],
++        build_dir=ROOT / "market" / "market",
++    ),
++    Module(
++        name="frailbox",
++        language="C",
++        dir=ROOT / "frailbox",
++        build_cmd=["make"],
++        clean_cmd=["make", "distclean"],
++        build_dir=ROOT / "frailbox" / "frailbox",
++    ),
++    Module(
++        name="engine",
++        language="C++",
++        dir=ROOT / "frailbox" / "engine",
++        build_cmd=["cmake", "--build", "build"],
++        clean_cmd=["rm", "-rf", "build"],
++        build_dir=ROOT / "frailbox" / "engine" / "build" / "trial-engine",
++    ),
++    Module(
++        name="compliance",
++        language="Java",
++        dir=ROOT / "compliance",
++        build_cmd=["javac", "-d", "build", "ComplianceAuditor.java"],
++        clean_cmd=["rm", "-rf", "build"],
++        build_dir=ROOT / "compliance" / "build",
++    ),
++    Module(
++        name="
 +
- def main() -> None:
-     parser = argparse.ArgumentParser(description="Build TentOfTrials modules.")
-     parser.add_argument(
-@@ -290,6 +353,12 @@ def main() -> None:
-         default=None,
-         help="Comma-separated list of modules to build (default: all)",
-     )
-+    parser.add_argument(
-+        "--list-modules",
-+        action="store_true",
-+        default=False,
-+        help="List all available modules and exit",
-+    )
-     parser.add_argument(
-         "--release",
-         action="store_true",
-@@ -297,6 +366,10 @@ def main() -> None:
-         help="Release mode (Rust only)",
-     )
-     args = parser.parse_args()
-+    
-+    if args.list_modules:
-+        list_modules()
-+        sys.exit(0)
- 
-     if args.clean:
-         if args.module:
-@@ -312,8 +385,12 @@ def main() -> None:
-         return
- 
-     if args.module:
--        names = [n.strip() for n in args.module.split(",")]
--        selected = [m for m in MODULES if m.name in names]
-+        names = parse_module_selection(args.module)
-+        if not names:
-+            print("Error: No module names provided.", file=sys.stderr)
-+            sys.exit(1)
-+        validate_module_names(names)
-+        selected = get_modules_by_names(names)
-     else:
-         selected = MODULES
- 
-@@ -326,6 +403,7 @@ def main() -> None:
- 
- if __name__ == "__main__":
-     main()
-+
- --- a/build.py
-+++ b/build.py
-@@ -1,4 +1,5 @@
- #!/usr/bin/env python3
-+# -*- coding: utf-8 -*-
- 
- import argparse
- import datetime
-@@ -12,6 +13,7 @@
- import time
- from dataclasses import dataclass
- from pathlib import Path
-+from typing import List, Set
- from typing import Optional
- 
- ROOT = Path(__file__).resolve().parent
-@@ -19,6 +21,7 @@
- DIAGNOSTIC
++def current_commit_id() -> str:
++    """Return the first 4 bytes (8 hex chars) of HEAD for stable per-commit diagnostics."""
++    try:
+         result = subprocess.run(
+             ["git", "rev-parse", "--verify", "HEAD"],
+             cwd=str(ROOT),
+@@ -160,6 +215,7 @@
+ def diagnostic_paths_for_commit() -> tuple[Path, Path, str]:
+     """Return stable diagnostic artifact paths under diagnostic/ for the current commit."""
+     DIAGNOSTIC_DIR.mkdir(parents=True, exist_ok=True)
++    DIAGNOSTIC_DIR.mkdir(parents=True, exist_ok=True)
+     commit_id = current_commit_id()
+     logd_path = DIAGNOSTIC_DIR / f"build-{commit_id}.log
