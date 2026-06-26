@@ -17,14 +17,14 @@
  from dataclasses import dataclass
  from pathlib import Path
  from typing import Optional
-@@ -17,6 +19,7 @@
- ROOT = Path(__file__).resolve().parent
+@@ -18,6 +20,7 @@
  DIAGNOSTIC_DIR = ROOT / "diagnostic"
  DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
-+VALID_MODULE_NAMES = frozenset(("backend", "frontend", "market", "frailbox", "engine", "compliance", "v2", "scans", "openapi", "openapi-tools"))
  ENCRYPTLY_BLOCKER_MESSAGE = "encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly."
++VALID_MODULE_NAMES = frozenset(["backend", "frontend", "market", "frailbox", "engine", "compliance", "v2", "scans", "openapi", "openapi-tools"])
  
  
+ def current_commit_id() -> str:
 @@ -73,6 +76,7 @@
      build_dir: Optional[Path] = None
      env: Optional[dict[str, str]] = None
@@ -33,138 +33,152 @@
  MODULES = [
      Module(
          name="backend",
-@@ -126,6 +130,7 @@
-         clean_cmd=["rm", "-rf", "build"],
-         build_dir=ROOT / "compliance" / "build",
+@@ -124,6 +128,7 @@
      ),
-+    # NOTE: v2, scans, openapi, openapi-tools modules truncated in original file
-     Module(
-         name="
+ ]
  
-@@ -133,6 +138,56 @@
- def current_commit_id() -> str:
-     """Return the first 4 bytes (8 hex chars) of HEAD for stable per-commit diagnostics."""
-     try:
-+        result = subprocess.run(
-+            ["git", "rev-parse", "--verify", "HEAD"],
-+            cwd=str(ROOT),
-+            capture_output=True,
-+            text=True,
-+            timeout=5,
-+        )
-+        commit = result.stdout.strip()
-+        if result.returncode == 0 and len(commit) >= 8:
-+            return commit[:8]
-+    except Exception:
-+        pass
-+    return "00000000"
 +
+ def run_command(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> tuple[int, str, str]:
+     """Run a command and return (returncode, stdout, stderr)."""
+     merged_env = os.environ.copy()
+@@ -134,6 +139,7 @@
+     )
+     return result.returncode, result.stdout, result.stderr
+ 
 +
-+def diagnostic_paths_for_commit() -> tuple[Path, Path, str]:
-+    """Return stable diagnostic artifact paths under diagnostic/ for the current commit."""
-+    DIAGNOSTIC_DIR.mkdir(parents=True, exist_ok=True)
-+    commit_id = current_commit_id()
-+    logd_path = DIAGNOSTIC_DIR / f"build-{commit_id}.logd"
-+    metadata_path = DIAGNOSTIC_DIR / f"build-{commit_id}.json"
-+    return logd_path, metadata_path, commit_id
+ def encrypt_log(log_path: Path, password: str) -> Path:
+     """Encrypt a log file using encryptly and return the encrypted path."""
+     if not shutil.which("encryptly"):
+@@ -155,6 +161,7 @@
+         print(f"Warning: {ENCRYPTLY_BLOCKER_MESSAGE}")
+     return log_path
+ 
 +
+ def build_module(module: Module, args: argparse.Namespace) -> dict:
+     """Build a single module and return result metadata."""
+     print(f"Building {module.name} ({module.language})...")
+@@ -183,6 +190,7 @@
+         "stderr": stderr,
+     }
+ 
 +
-+def split_diagnostic_logd(logd_path: Path, chunk_size: int = DIAGNOSTIC_CHUNK_SIZE) -> list[Path]:
-+    """Split an oversized .logd into numbered .logd chunks and remove the original."""
-+    if logd_path.stat().st_size <= chunk_size:
-+        return [logd_path]
+ def clean_module(module: Module) -> dict:
+     """Clean a single module and return result metadata."""
+     print(f"Cleaning {module.name} ({module.language})...")
+@@ -198,6 +206,7 @@
+         "stderr": stderr,
+     }
+ 
 +
-+    chunks: list[Path] = []
-+    stem = logd_path.stem
-+    with logd_path.open("rb") as source:
-+        index = 1
-+        while True:
-+            data = source.read(chunk_size)
-+            if not data:
-+                break
-+            chunk_path = logd_path.with_name(f"{stem}-part{index:03d}.logd")
-+            chunk_path.write_bytes(data)
-+            chunks.append(chunk_path)
-+            index += 1
+ def write_diagnostic_metadata(metadata_path: Path, results: list[dict], password: str) -> None:
+     """Write diagnostic metadata JSON."""
+     metadata = {
+@@ -210,6 +219,7 @@
+     with open(metadata_path, "w") as f:
+         json.dump(metadata, f, indent=2)
+ 
 +
-+    logd_path.unlink()
-+    return chunks
+ def run_build(modules: list[Module], args: argparse.Namespace) -> list[dict]:
+     """Run the build for the given modules and return results."""
+     results = []
+@@ -218,6 +228,7 @@
+         results.append(build_module(module, args))
+     return results
+ 
 +
+ def run_clean(modules: list[Module]) -> list[dict]:
+     """Run clean for the given modules and return results."""
+     results = []
+@@ -226,6 +237,7 @@
+         results.append(clean_module(module))
+     return results
+ 
 +
-+@dataclass
-+class Module:
-+    name: str
-+    language: str
-+    dir: Path
-+    build_cmd: list[str]
-+    clean_cmd: list[str]
-+    build_dir: Optional[Path] = None
-+    env: Optional[dict[str, str]] = None
+ def parse_args() -> argparse.Namespace:
+     parser = argparse.ArgumentParser(description="Build script for Tent of Trials")
+     parser.add_argument(
+@@ -240,6 +252,12 @@
+         help="Comma-separated list of module names to build (e.g., backend,frontend)",
+     )
+     parser.add_argument("--release", action="store_true", help="Release mode (Rust only)")
++    parser.add_argument(
++        "--list-modules",
++        action="store_true",
++        dest="list_modules",
++        help="List available modules with details and exit",
++    )
+     return parser.parse_args()
+ 
+ 
+@@ -248,6 +266,7 @@
+     if args.clean:
+         print("Cleaning build artifacts...")
+         run_clean(modules)
++        return 0
+ 
+     results = run_build(modules, args)
+ 
+@@ -276,16 +295,77 @@
+     return 0 if all(r["returncode"] == 0 for r in results) else 1
+ 
+ 
++def parse_module_selection(raw: str) -> list[str]:
++    """Parse a comma-separated module string into a list of stripped names.
 +
-+MODULES = [
-+    Module(
-+        name="backend",
-+        language="Rust",
-+        dir=ROOT / "backend",
-+        build_cmd=["cargo", "build"],
-+        clean_cmd=["cargo", "clean"],
-+        build_dir=ROOT / "backend" / "target",
-+        env={"CARGO_TERM_COLOR": "always"},
-+    ),
-+    Module(
-+        name="frontend",
-+        language="TypeScript",
-+        dir=ROOT / "frontend",
-+        build_cmd=["npm", "run", "build"],
-+        clean_cmd=["rm", "-rf", "node_modules", "dist"],
-+        build_dir=ROOT / "frontend" / "dist",
-+        env={"NODE_ENV": "production"},
-+    ),
-+    Module(
-+        name="market",
-+        language="Go",
-+        dir=ROOT / "market",
-+        build_cmd=["go", "build", "-o", "market", "."],
-+        clean_cmd=["rm", "-f", "market"],
-+        build_dir=ROOT / "market" / "market",
-+    ),
-+    Module(
-+        name="frailbox",
-+        language="C",
-+        dir=ROOT / "frailbox",
-+        build_cmd=["make"],
-+        clean_cmd=["make", "distclean"],
-+        build_dir=ROOT / "frailbox" / "frailbox",
-+    ),
-+    Module(
-+        name="engine",
-+        language="C++",
-+        dir=ROOT / "frailbox" / "engine",
-+        build_cmd=["cmake", "--build", "build"],
-+        clean_cmd=["rm", "-rf", "build"],
-+        build_dir=ROOT / "frailbox" / "engine" / "build" / "trial-engine",
-+    ),
-+    Module(
-+        name="compliance",
-+        language="Java",
-+        dir=ROOT / "compliance",
-+        build_cmd=["javac", "-d", "build", "ComplianceAuditor.java"],
-+        clean_cmd=["rm", "-rf", "build"],
-+        build_dir=ROOT / "compliance" / "build",
-+    ),
-+    Module(
-+        name="
-+
-+def current_commit_id() -> str:
-+    """Return the first 4 bytes (8 hex chars) of HEAD for stable per-commit diagnostics."""
++    >>> parse_module_selection("backend, frontend")
++    ['backend', 'frontend']
++    >>> parse_module_selection("backend")
++    ['backend']
++    >>> parse_module_selection("backend , frontend ,market ")
++    ['backend', 'frontend', 'market']
++    """
++    if not raw:
++        return []
++    # Use csv to handle optional spaces robustly
++    reader = csv.reader([raw], skipinitialspace=True)
 +    try:
-         result = subprocess.run(
-             ["git", "rev-parse", "--verify", "HEAD"],
-             cwd=str(ROOT),
-@@ -160,6 +215,7 @@
- def diagnostic_paths_for_commit() -> tuple[Path, Path, str]:
-     """Return stable diagnostic artifact paths under diagnostic/ for the current commit."""
-     DIAGNOSTIC_DIR.mkdir(parents=True, exist_ok=True)
-+    DIAGNOSTIC_DIR.mkdir(parents=True, exist_ok=True)
-     commit_id = current_commit_id()
-     logd_path = DIAGNOSTIC_DIR / f"build-{commit_id}.log
++        items = next(reader)
++    except StopIteration:
++        return []
++    return [item.strip() for item in items if item.strip()]
++
++
++def validate_module_names(names: list[str], valid: set[str]) -> tuple[list[str], list[str]]:
++    """Return (valid_names, invalid_names) from a list of candidate names.
++
++    >>> validate_module_names(["backend", "frontend"], VALID_MODULE_NAMES)
++    (['backend', 'frontend'], [])
++    >>> validate_module_names(["backend", "bogus"], VALID_MODULE_NAMES)
++    (['backend'], ['bogus'])
++    """
++    valid_names = [name for name in names if name in valid]
++    invalid_names = [name for name in names if name not in valid]
++    return valid_names, invalid_names
++
++
++def print_module_list() -> None:
++    """Print available modules and their details."""
++    print("Available modules:")
++    for module in MODULES:
++        print(f"  {module.name:<15} ({module.language})")
++
++
+ def main() -> int:
+     args = parse_args()
+ 
++    if args.list_modules:
++        print_module_list()
++        return 0
++
+     if args.module:
+-        selected_names = [name.strip() for name in args.module.split(",")]
+-        selected_modules = [m for m in MODULES if m.name in selected_names]
++        selected_names = parse_module_selection(args.module)
++        valid_names, invalid_names = validate_module_names(selected_names, VALID_MODULE_NAMES)
++
++        if invalid_names:
++            print(f"Error: Invalid module name(s): {', '.join(invalid_names)}", file=sys.stderr)
++            print(f"Valid module names are: {', '.join(sorted(VALID_MODULE_NAMES))}", file=sys.stderr)
++            return 1
++
++        selected_modules = [m for m in MODULES if m.name in valid_names
