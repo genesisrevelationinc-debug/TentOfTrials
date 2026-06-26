@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
-from __future__ import annotations
 import argparse
+import csv
 import datetime
 import getpass
 import json
@@ -11,7 +11,8 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, asdict
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -19,8 +20,8 @@ ROOT = Path(__file__).resolve().parent
 DIAGNOSTIC_DIR = ROOT / "diagnostic"
 DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
 ENCRYPTLY_BLOCKER_MESSAGE = "encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly."
+VALID_MODULE_NAMES = frozenset(["backend", "frontend", "market", "frailbox", "engine", "compliance", "v2", "openapi", "openapi-tools", "scans"])
 
-VALID_MODULE_NAMES = frozenset({"backend", "frontend", "market", "frailbox", "engine", "compliance", "v2", "openapi", "openapi-tools", "scans"})
 
 def current_commit_id() -> str:
     """Return the first 4 bytes (8 hex chars) of HEAD for stable per-commit diagnostics."""
@@ -94,66 +95,65 @@ MODULES = [
     Module(
         name="frontend",
         language="TypeScript",
-        dir=ROOT / "frontend",
-        build_cmd=["npm", "run", "build"],
-        name="compliance",
-        language="Java",
-        dir=ROOT / "compliance",
-        build_cmd=["javac", "-d", "build", "ComplianceAuditor.java"],
-        clean_cmd=["rm", "-rf", "build"],
         build_dir=ROOT / "compliance" / "build",
     ),
-        dir=ROOT / "market",
+    Module(
         name="v2",
         language="Ruby",
         dir=ROOT / "v2",
         build_cmd=["ruby", "build.rb"],
-        clean_cmd=["rm", "-rf", "build"],
+    Module(
         build_dir=ROOT / "v2" / "build",
     ),
-        dir=ROOT / "frailbox",
+    Module(
         name="openapi",
         language="Haskell",
         dir=ROOT / "openapi",
         build_cmd=["cabal", "build"],
-        clean_cmd=["cabal", "clean"],
+    ),
         build_dir=ROOT / "openapi" / "dist",
     ),
-        dir=ROOT / "frailbox" / "engine",
+    Module(
         name="openapi-tools",
         language="Lua",
         dir=ROOT / "openapi-tools",
         build_cmd=["lua", "build.lua"],
-        clean_cmd=["rm", "-rf", "build"],
-        build_dir=ROOT / "openapi-tools" / "build",
+        build_dir=ROOT / "frailbox" / "frailbox",
+        build_dir=ROOT / "openapi-tools" / "dist",
     ),
-        dir=ROOT / "compliance",
+    Module(
         name="scans",
         language="Lua",
         dir=ROOT / "scans",
         build_cmd=["lua", "build.lua"],
         clean_cmd=["rm", "-rf", "build"],
-        build_dir=ROOT / "scans" / "build",
+        build_dir=ROOT / "frailbox" / "engine" / "build" / "trial-engine",
     ),
-        dir=ROOT / "v2" / "services",
+]
 
 
 def parse_module_selection(modules_arg: str) -> list[str]:
-    """Parse a comma-separated module selection string into a list of module names.
+    """Parse a comma-separated module string into a list of stripped module names.
 
-    >>> parse_module_selection("backend,frontend")
-    ['backend', 'frontend']
     >>> parse_module_selection("backend, frontend")
     ['backend', 'frontend']
-    >>> parse_module_selection("backend , frontend , market ")
+    >>> parse_module_selection("backend")
+    ['backend']
+    >>> parse_module_selection("backend,frontend, market")
     ['backend', 'frontend', 'market']
     """
     if not modules_arg or not modules_arg.strip():
         return []
-    return [name.strip() for name in modules_arg.split(",") if name.strip()]
+    # Use csv to handle optional spaces around commas robustly
+    reader = csv.reader([modules_arg], skipinitialspace=True)
+    try:
+        parts = next(reader)
+    except StopIteration:
+        return []
+    return [p for p in parts if p]
 
 
-def validate_module_names(module_names: list[str]) -> tuple[list[str], list[str]]:
+def validate_module_names(selections: list[str]) -> tuple[list[str], list[str]]:
     """Validate module names and return (valid_names, invalid_names).
 
     >>> validate_module_names(["backend", "frontend"])
@@ -163,7 +163,7 @@ def validate_module_names(module_names: list[str]) -> tuple[list[str], list[str]
     """
     valid = []
     invalid = []
-    for name in module_names:
+    for name in selections:
         if name in VALID_MODULE_NAMES:
             valid.append(name)
         else:
@@ -171,25 +171,46 @@ def validate_module_names(module_names: list[str]) -> tuple[list[str], list[str]
     return valid, invalid
 
 
-def format_valid_modules_list() -> str:
+def format_valid_modules() -> str:
     """Return a formatted string of valid module names."""
     return ", ".join(sorted(VALID_MODULE_NAMES))
 
 
-def get_module_details() -> list[dict]:
-    """Return a list of dictionaries with details for each valid module."""
-    return [
-        {
-            "name": mod.name,
-            "language": mod.language,
-            "directory": str(mod.dir.relative_to(ROOT)),
-        }
-        for mod in MODULES
-    ]
+def list_modules() -> None:
+    """Print a list of all available modules with details."""
+    print("Available modules:")
+    print("-" * 60)
+    max_name_len = max(len(m.name) for m in MODULES)
+    for mod in MODULES:
+        name_padded = mod.name.ljust(max_name_len)
+        print(f"  {name_padded}  ({mod.language})  ->  {mod.dir}")
+    print("-" * 60)
+    print(f"Total: {len(MODULES)} modules")
 
 
-def run_module(module: Module, *, clean: bool = False, release: bool = False) -> bool:
-    """Run a module's build or clean command. Returns True on success."""
+def fail_with_invalid_modules(invalid_names: list[str]) -> None:
+    """Exit with a clear error message listing invalid and valid module names."""
+    print(f"Error: Invalid module name(s): {', '.join(invalid_names)}", file=sys.stderr)
+    print(f"Valid module names are: {format_valid_modules()}", file=sys.stderr)
+    sys.exit(1)
+
+
+def run_command(cmd: list[str], cwd: Path, env: Optional[dict] = None) -> bool:
+    """Run a shell command and return True if it succeeds."""
+    print(f"Running: {' '.join(cmd)} in {cwd}")
+        clean_cmd=["rm", "-rf", "build"],
+        build_dir=ROOT / "compliance" / "build",
+    ),
+    Module(
+        name="v2-market-stream",
+        language="Ruby",
+        dir=ROOT / "v2" / "services",
+        build_cmd=["ruby", "-c", "market_stream.rb"],
+        clean_cmd=["echo", "Ruby has no build artifacts to clean"],
+        build_dir=None,
+    ),
+    Module(
+        name="nfc-scanner",
         language="Lua",
         dir=ROOT / "frailbox" / "nfc",
         build_cmd=["luac", "-p", "scanner.lua"],
@@ -241,56 +262,52 @@ def _normalize_os() -> Optional[str]:
         return "linux"
     if system == "darwin":
         return "macos"
-    if system == "windows":
-        return "windows"
+def main():
+    parser = argparse.ArgumentParser(description="Build script for TentOfTrials")
+    parser.add_argument("--module", type=str, help="Comma-separated list of modules to build")
+    parser.add_argument("--list-modules", action="store_true", help="List all available modules and exit")
+    parser.add_argument("--clean", action="store_true", help="Clean build artifacts")
+    parser.add_argument("--release", action="store_true", help="Build in release mode (Rust only)")
+    parser.add_argument("--diagnostic", action="store_true", help="Write diagnostic bundle")
+    os_name = _normalize_os()
+
+    args = parser.parse_args()
+
+    if args.list_modules:
+        list_modules()
+        sys.exit(0)
+
+    # Determine which modules to build
+    if args.module:
+        # Build specific modules
+def get_encryptly_bin() -> Optional[Path]:
+    target = detect_encryptly_platform()
+        # Build all modules
+        selected_modules = MODULES
+
+    # Validate module names if --module was specified
+    if args.module:
+        module_names = parse_module_selection(args.module)
+        valid_names, invalid_names = validate_module_names(module_names)
+        if invalid_names:
+            fail_with_invalid_modules(invalid_names)
+        # Filter to only valid modules
+        selected_modules = [m for m in MODULES if m.name in valid_names]
+
+    # Clean if requested
+    if args.clean:
+        for mod in selected_modules:
+        return LEGACY_ENCRYPTLY_BIN
+
     return None
 
 
-def detect_encryptly_platform() -> Optional[str]:
-    os_name = _normalize_os()
-    arch = _normalize_arch(platform.machine())
-    if os_name is None or arch is None:
-        return None
-    return f"{os_name}-{arch}"
+def encryptly_platform_help() -> str:
+    detected = detect_encryptly_platform() or "unsupported"
+    available = ", ".join(sorted(ENCRYPTLY_BINARIES))
+    return f"detected {detected}; available: {available}"
 
 
-def get_encryptly_bin() -> Optional[Path]:
-    target = detect_encryptly_platform()
-    if target is not None:
-        binary = ENCRYPTLY_BINARIES.get(target)
-        if binary is not None and binary.exists():
-            return binary
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Build TentOfTrials modules.")
-    parser.add_argument("--module", help="Comma-separated list of modules to build")
-    parser.add_argument("--list-modules", action="store_true", help="List all valid modules with details and exit")
-    parser.add_argument("--clean", action="store_true", help="Clean instead of build")
-    parser.add_argument("--release", action="store_true", help="Release mode (Rust only)")
-    args = parser.parse_args()
-
-    logd_path, metadata_path, commit_id = diagnostic_paths_for_commit()
-    the_password = getpass.getpass("Diagnostic password: ")
-
-    if args.list_modules:
-        print("Valid modules:")
-        for mod in MODULES:
-            print(f"  - {mod.name} ({mod.language}) [dir: {mod.dir.relative_to(ROOT)}]")
-        sys.exit(0)
-
-    if args.module:
-        selected_names = parse_module_selection(args.module)
-        valid_names, invalid_names = validate_module_names(selected_names)
-
-        if invalid_names:
-            print(f"Error: Invalid module name(s): {', '.join(invalid_names)}", file=sys.stderr)
-            print(f"Valid module names are: {format_valid_modules_list()}", file=sys.stderr)
-            sys.exit(1)
-
-        args.module = ",".join(valid_names) if valid_names else None
-
-    if args.clean:
-        if args.module:
-            selected = [m for m in MODULES if m.name in args.module.split(",")]
 def check_encryptly_runs(timeout: int = 600) -> tuple[bool, str]:
     """Verify encryptly can create a diagnostic bundle before doing any build work."""
     encryptly_bin = get_encryptly_bin()
