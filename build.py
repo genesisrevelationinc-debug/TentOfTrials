@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
 import argparse
-import csv
 import datetime
 import getpass
 import json
@@ -9,22 +9,21 @@ import os
 import platform
 import shutil
 import subprocess
-import sys
 import time
-import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Iterable
 
 ROOT = Path(__file__).resolve().parent
 DIAGNOSTIC_DIR = ROOT / "diagnostic"
-DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
+DIAGNOSTIC_DIR = ROOT / "diagnostic"
 ENCRYPTLY_BLOCKER_MESSAGE = "encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly."
-VALID_MODULE_NAMES = {"backend", "frontend", "market", "frailbox", "engine", "compliance", "v2", "scans", "openapi", "openapi-tools"}
+
 
 
 def current_commit_id() -> str:
     """Return the first 4 bytes (8 hex chars) of HEAD for stable per-commit diagnostics."""
+    try:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "HEAD"],
@@ -80,12 +79,13 @@ class Module:
     build_cmd: list[str]
     clean_cmd: list[str]
     build_dir: Optional[Path] = None
+    build_dir: Optional[Path] = None
     env: Optional[dict[str, str]] = None
+
 
 MODULES = [
     Module(
         name="backend",
-        language="Rust",
         dir=ROOT / "backend",
         build_cmd=["cargo", "build"],
         clean_cmd=["cargo", "clean"],
@@ -111,102 +111,42 @@ MODULES = [
     ),
     Module(
         name="frailbox",
+        language="C",
+        dir=ROOT / "frailbox",
+        build_cmd=["make"],
+        clean_cmd=["make", "distclean"],
+        build_dir=ROOT / "frailbox" / "frailbox",
+    ),
+    Module(
+        name="engine",
+        language="C++",
+        dir=ROOT / "frailbox" / "engine",
+        build_cmd=["cmake", "--build", "build"],
+        clean_cmd=["rm", "-rf", "build"],
+        build_dir=ROOT / "frailbox" / "engine" / "build" / "trial-engine",
+    ),
+    Module(
+        name="compliance",
+        language="Java",
+        dir=ROOT / "compliance",
+        build_cmd=["javac", "-d", "build", "ComplianceAuditor.java"],
+        clean_cmd=["rm", "-rf", "build"],
         build_dir=ROOT / "compliance" / "build",
     ),
     Module(
-        name="v2",
+        name="v2-market-stream",
         language="Ruby",
-        dir=ROOT / "v2",
-        build_cmd=["ruby", "build.rb"],
-    Module(
-        build_dir=ROOT / "v2" / "build",
-    ),
-    Module(
-        name="scans",
-        language="Lua",
-        dir=ROOT / "scans",
-        build_cmd=["lua", "build.lua"],
-    ),
-        build_dir=ROOT / "scans" / "build",
-    ),
-    Module(
-        name="openapi",
-        language="Haskell",
-        dir=ROOT / "openapi",
-        build_cmd=["cabal", "build"],
-        build_dir=ROOT / "compliance" / "build",
-        build_dir=ROOT / "openapi" / "dist",
-    ),
-    Module(
-        name="openapi-tools",
-        language="Lua",
-        dir=ROOT / "openapi-tools",
-        build_cmd=["lua", "build.lua"],
+        dir=ROOT / "v2" / "services",
+        build_cmd=["ruby", "-c", "market_stream.rb"],
         clean_cmd=["echo", "Ruby has no build artifacts to clean"],
         build_dir=None,
     ),
 ]
 
-MODULE_MAP = {m.name: m for m in MODULES}
 
-
-def parse_module_selection(raw: str) -> list[str]:
-    """Parse a comma-separated module string into a list of stripped module names."""
-    if not raw or not raw.strip():
-        return []
-    # Use csv to handle optional spaces around commas robustly
-    reader = csv.reader([raw], skipinitialspace=True)
-    try:
-        names = next(reader)
-    except StopIteration:
-        return []
-    return [name.strip() for name in names if name.strip()]
-
-
-def validate_module_selection(names: list[str]) -> tuple[list[str], list[str]]:
-    """Return (valid_names, invalid_names) for a list of module names."""
-    valid = []
-    invalid = []
-    for name in names:
-        if name in VALID_MODULE_NAMES:
-            valid.append(name)
-        else:
-            invalid.append(name)
-    return valid, invalid
-
-
-def print_module_list() -> None:
-    """Print a formatted list of all available modules with details."""
-    print("Available modules:")
-    max_name_len = max(len(m.name) for m in MODULES) if MODULES else 0
-拓
-    for m in MODULES:
-        name_padded = m.name.ljust(max_name_len)
-        print(f"  {name_padded}  ({m.language})  {m.dir}")
-
-
-def handle_module_validation(raw_selection: str) -> list[str]:
-    """Parse and validate module selection, exiting with helpful message on failure."""
-    names = parse_module_selection(raw_selection)
-    if not names:
-        print("Error: No module names provided.", file=sys.stderr)
-        print(f"Valid module names: {', '.join(sorted(VALID_MODULE_NAMES))}", file=sys.stderr)
-        print_module_list()
-        sys.exit(1)
-
-    valid, invalid = validate_module_selection(names)
-    if invalid:
-        print(f"Error: Invalid module name(s): {', '.join(invalid)}", file=sys.stderr)
-        print(f"Valid module names: {', '.join(sorted(VALID_MODULE_NAMES))}", file=sys.stderr)
-        print_module_list()
-        sys.exit(1)
-
-    return valid
-
-
-def run_command(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> bool:
-    """Run a shell command in a given directory. Return True if successful."""
-    print(f"Running: {' '.join(cmd)} in {cwd}")
+def run_module(module: Module, *, release: bool = False) -> dict:
+    """Build a single module and return result metadata."""
+    start = time.time()
         clean_cmd=["echo", "Lua has no build artifacts to clean"],
         build_dir=None,
     ),
@@ -257,12 +197,13 @@ def _normalize_os() -> Optional[str]:
         return "macos"
     if system == "windows":
         return "windows"
-    return None
+        "duration_sec": duration,
+    }
 
 
-def detect_encryptly_platform() -> Optional[str]:
-    os_name = _normalize_os()
-    arch = _normalize_arch(platform.machine())
+def encrypt_diagnostic(log_path: Path, metadata_path: Path, results: list[dict]) -> None:
+    """Encrypt build log with encryptly and write metadata JSON."""
+    password = getpass.getpass("Enter password for diagnostic encryption: ")
     if os_name is None or arch is None:
         return None
     return f"{os_name}-{arch}"
@@ -305,12 +246,13 @@ def check_encryptly_runs(timeout: int = 600) -> tuple[bool, str]:
                 str(encryptly_bin),
                 "pack",
                 str(logd_path),
-                "--include",
-                str(workspace),
-                "--max-file-size",
-                "32000",
-            ],
-            cwd=str(ROOT),
+        print(f"Diagnostic metadata written to {metadata_path}")
+        print(f"Diagnostic log written to {log_path}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build TentOfTrials modules.")
+    parser.add_argument(
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -319,54 +261,104 @@ def check_encryptly_runs(timeout: int = 600) -> tuple[bool, str]:
         #     output = result.stderr.strip() or result.stdout.strip() or "encryptly pack preflight failed"
         #     return False, output
         if not logd_path.exists():
-            return False, "encryptly preflight completed without creating a .logd"
-        return True, "encryptly preflight passed"
-    except subprocess.TimeoutExpired:
-    parser.add_argument("--clean", action="store_true", help="Clean build artifacts")
-    parser.add_argument("--release", action="store_true", help="Release mode (Rust only)")
-    parser.add_argument("--module", type=str, help="Comma-separated list of modules to build")
-    parser.add_argument("--list-modules", action="store_true", help="List available modules and exit")
+        "--release", action="store_true", help="Release mode (Rust only)"
+    )
     parser.add_argument(
-        "--diagnostic-password",
-        type=str,
-class Colors:
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
+        "--diagnostic",
+        action="store_true",
+        help="Generate encrypted diagnostic log",
+    )
+    parser.add_argument(
+        "--list-modules",
+        action="store_true",
+        help="List all available modules with details and exit",
+    )
 
     args = parser.parse_args()
 
-    if args.list_modules:
-        print_module_list()
-        sys.exit(0)
-
-    selected_module_names: list[str] = []
-    if args.module:
-        selected_module_names = handle_module_validation(args.module)
-
     if args.clean:
-        clean_all()
+
+class Colors:
+            print(f"Cleaning {mod.name}...")
+            subprocess.run(mod.clean_cmd, cwd=str(mod.dir), check=False)
         return
-def color(text: str, code: str) -> str:
-    if not sys.stdout.isatty():
-        return text
-    return f"{code}{text}{Colors.RESET}"
-    password = args.diagnostic_password or getpass.getpass("Enter diagnostic password: ")
+    
+    if args.list_modules:
+        list_modules()
+        return
 
-    modules_to_build = MODULES
-    if selected_module_names:
-        modules_to_build = [MODULE_MAP[name] for name in selected_module_names]
+    selected_modules = MODULES
 
-    results = {}
-    for module in modules_to_build:
+    GRAY = "\033[90m"
+        # Support comma-separated names with optional spaces
+        raw = args.module
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+
+        invalid_names = validate_module_names(names)
+        if invalid_names:
+            valid_names = [m.name for m in MODULES]
+            print(f"Error: Invalid module name(s): {', '.join(invalid_names)}", file=sys.stderr)
+            print(f"Valid module names are: {', '.join(valid_names)}", file=sys.stderr)
+            sys.exit(1)
+
+        selected_modules = [m for m in MODULES if m.name in names]
+
+    results = []
+def check_prerequisites() -> list[str]:
+    required = {
+        "cargo": "Rust",
+        "npm": "Node.js",
+        "go": "Go",
+        "gcc": "C (GCC)",
+        "g++": "C++ (GCC)",
+        "cmake": "CMake",
+        "make": "Make",
+        "python3": "Python",
+        "javac": "Java (JDK)",
         "ruby": "Ruby",
         "luac": "Lua",
         "ghc": "GHC (Haskell)",
     }
+        print(f"  {mod.name}: {'OK' if ok else 'FAIL'}")
 
-    missing = []
-    for cmd, label in required.items():
-        if shutil.which(cmd) is None:
-            missing.append(f"{label} ({cmd})")
+
+def parse_module_selection(raw: str) -> list[str]:
+    """Parse a comma-separated module string into a list of stripped names."""
+    return [n.strip() for n in raw.split(",") if n.strip()]
+
+
+def get_valid_module_names() -> list[str]:
+    """Return a list of all valid module names."""
+    return [m.name for m in MODULES]
+
+
+def validate_module_names(names: Iterable[str]) -> list[str]:
+    """Return a list of invalid module names; empty if all are valid."""
+    valid = get_valid_module_names()
+    return [name for name in names if name not in valid]
+
+
+def list_modules() -> None:
+    """Print a formatted list of all available modules with details."""
+    print("Available modules:")
+    print("-" * 60)
+    print(f"{'Name':<15} {'Language':<15} {'Directory':<30}")
+    print("-" * 60)
+    for mod in MODULES:
+        print(f"{mod.name:<15} {mod.language:<15} {mod.dir}")
+    print("-" * 60)
+
+
+if __name__ == "__main__":
+    main()
+
+
+__all__ = [
+    "parse_module_selection",
+    "get_valid_module_names",
+    "validate_module_names",
+    "list_modules",
+]
 
     return missing
 
