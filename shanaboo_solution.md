@@ -1,203 +1,156 @@
  ```diff
---- a/v2/services/market_stream.rb
-+++ b/v2/services/market_stream.rb
+--- a/tools/log_aggregator.py
++++ b/tools/log_aggregator.py
 @@ -1,4 +1,4 @@
--#!/usr/bin/env ruby
-+#!/usr/bin/env ruby
- # frozen_string_literal: true
+-#!/usr/bin/env python3
++#!/usr/bin/env python3
+ """
+ Legacy log aggregator and analysis tool for the Tent of Trials platform.
  
- # MarketStream  -  v2 Market Data Streaming Service
-@@ -85,6 +85,7 @@
- require 'sinatra/base'
- require 'logger'
+@@ -23,6 +23,7 @@
+ import csv
+ import gzip
+ import io
++import unittest
+ import json
+ import logging
+ import os
+@@ -32,7 +33,7 @@
+ from concurrent.futures import ThreadPoolExecutor
+ from datetime import datetime, timedelta, timezone
+ from pathlib import Path
+-from typing import Any, Counter, Dict, List, Optional, Tuple
++from typing import Any, Dict, List, Optional, Tuple
+ from collections import defaultdict, Counter
  
-+require_relative '../lib/ring_buffer'
- # ===─ Fucking Constants =================================================================================─
+ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+@@ -97,7 +98,7 @@ def extract_level(self, line: str) -> str:
+         for pattern, level in self.LEVEL_PATTERNS:
+             if re.search(pattern, line, re.IGNORECASE):
+                 return leve
+-                return level
++        return level
+         return 'unknown'
  
- V2_VERSION = '2.0.0'
-@@ -147,6 +148,7 @@
-   BATCH_FLUSH_INTERVAL = 0.1     # seconds. 100ms batches. Very modern.
- end
  
-+
- # ===─ Logger Setup ==========================================================================================
+@@ -105,7 +106,7 @@ class JSONLogParser(LogParser):
+     """Parser for JSON-formatted log lines."""
  
- # In v2, we use a REAL logging framework with levels and everything.
-@@ -213,6 +215,7 @@
-   end
- end
+     def parse(self, line: str) -> Optional[Dict[str, Any]]:
+-        try:
++        try:
+             data = json.loads(line)
+             if not isinstance(data, dict):
+                 return None
+@@ -123,7 +124,7 @@ def parse(self, line: str) -> Optional[Dict[str, Any]]:
+                 'timestamp": timestamp,
+                 "level": level,
+                 "service": service,
+-                "message": message,
++                "message": message,
+                 "raw": line,
+             }
+         except (json.JSONDecodeError, ValueError):
+@@ -134,7 +135,7 @@ class TextLogParser(LogParser):
+     """Parser for plain text log lines."""
  
-+
- # ===─ MarketStream Core ===================================================================================
+     TIMESTAMP_RE = re.compile(
+-        r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})'
++        r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})'
+     )
  
- class MarketStream
-@@ -228,6 +231,9 @@
-     @buffer_mutex = Mutex.new
-     @tick_buffer = []
-     @flush_timer = nil
-+    @ring_buffer = RingBuffer.new(1000) # bounded ring buffer for tick batches
-+    @drain_thread = nil
-+    @shutdown = false
+     def parse(self, line: str) -> Optional[Dict[str, Any]]:
+@@ -142,7 +143,7 @@ def parse(self, line: str) -> Optional[Dict[str, Any]]:
+         if not timestamp:
+             return None
  
-     # Callbacks
-     @on_tick = nil
-@@ -248,8 +254,8 @@
-   # Start the stream (connects WebSocket, starts timers, etc.)
-   def start
-     logger.info "[MarketStream] Starting v#{V2_VERSION} (build #{V2_BUILD})"
--
-     connect_ws
-+    start_drain_worker
-     start_flush_timer
-   end
+-        level = self.extract_level(line)
++        level = self.extract_level(line)
  
-@@ -257,8 +263,9 @@
-   def stop
-     logger.info "[MarketStream] Stopping..."
-     @flush_timer&.cancel
-+    @shutdown = true
-+    @ring_buffer.close if @ring_buffer
-     disconnect_ws
--    flush_buffer # final flush
-   end
+         service = 'unknown'
+         service_match = re.search(r'\[([^\]]+)\]', line)
+@@ -153,7 +154,7 @@ def parse(self, line: str) -> Optional[Dict[str, Any]]:
+             "timestamp": timestamp,
+             "level": level,
+             "service": service,
+-            "message": line.strip(),
++            "message": line.strip(),
+             "raw": line,
+         }
  
-   # Register a callback for each tick batch
-@@ -310,6 +317,7 @@
-     end
-   end
+@@ -162,7 +163,7 @@ class NginxLogParser(LogParser):
+     """Parser for nginx access logs."""
  
-+
-   # ===─ Buffer / Flush Logic ================================================================================
+     NGINX_PATTERN = re.compile(
+-        r'(\d+\.\d+\.\d+\.\d+)\s+-\s+-\s+\[([^\]]+)\]\s+"(\w+)\s+([^\s]+)\s+HTTP/[\d\.]+"\s+(\d+)\s+(\d+)'
++        r'(\d+\.\d+\.\d+\.\d+)\s+-\s+-\s+\[([^\]]+)\]\s+"(\w+)\s+([^\s]+)\s+HTTP/[\d\.]+"\s+(\d+)\s+(\d+)'
+     )
  
-   def start_flush_timer
-@@ -324,25 +332,49 @@
-     end
-   end
+     def parse(self, line: str) -> Optional[Dict[str, Any]]:
+@@ -172,7 +173,7 @@ def parse(self, line: str) -> Optional[Dict[str, Any]]:
  
--  # TODO: This is fucking terrible. We copy the buffer under a mutex, clear it,
--  # then start an ad-hoc thread for every flush. At high throughput this blocks
--  # and spawns threads like rabbits. We need a real bounded queue and a single
--  # drain worker. Someone should write v2/lib/ring_buffer.rb and replace this.
-+  # Flush the current tick buffer into the ring buffer as a batch.
-+  # The ring buffer handles backpressure; if full, oldest batch is dropped.
-   def flush_buffer
-     batch = nil
-     @buffer_mutex.synchronize do
-       batch = @tick_buffer.dup
-       @tick_buffer.clear
-     end
--
-     return if batch.nil? || batch.empty?
-+    @ring_buffer.push(batch)
-+  end
+         ip, timestamp_str, method, path, status, size = match.groups()
  
--    Thread.new do
--      process_batch(batch)
--    end
-+  # Start a single drain worker thread that consumes batches from the ring buffer.
-+  def start_drain_worker
-+    @drain_thread = Thread.new do
-+      loop do
-+        break if @shutdown && @ring_buffer.empty?
-+        batch = @ring_buffer.pop(timeout: 0.5)
-+        if batch
-+          process_batch(batch)
-+        end
-+      end
-+    end
-+  end
-+
-+  # Wait for the drain worker to finish processing remaining batches.
-+  def drain
-+    # Push a sentinel to ensure the worker wakes up if needed
-+    @ring_buffer.push(:drain) unless @shutdown
-+  end
-+
-+  # Graceful shutdown: signal shutdown, close ring buffer, wait for drain worker.
-+  def shutdown!
-+    @shutdown = true
-+    @flush_timer&.cancel
-+    @ring_buffer.close
-+    @drain_thread&.join(5)
-+    # Final flush of any remaining ticks
-+    final_batch = nil
-+    @buffer_mutex.synchronize do
-+      final_batch = @tick_buffer.dup
-+      @tick_buffer.clear
-+    end
-+    process_batch(final_batch) if final_batch && !final_batch.empty?
-   end
+-        timestamp = None
++        timestamp = None
+         for fmt in ['%d/%b/%Y:%H:%M:%S %z', '%d/%b/%Y:%H:%M:%S']:
+             try:
+                 dt = datetime.strptime(timestamp_str, fmt)
+@@ -186,7 +187,7 @@ def parse(self, line: str) -> Optional[Dict[str, Any]]:
+             "timestamp": timestamp,
+             "level": "info",
+             "service": "nginx",
+-            "message": f"{method} {path} {status}",
++            "message": f"{method} {path} {status}",
+             "raw": line,
+             "ip": ip,
+             "method": method,
+@@ -194,7 +195,7 @@ def parse(self, line: str) -> Optional[Dict[str, Any]]:
+             "status": int(status),
+             "size": int(size),
+         }
+-        return result
++        return result
  
-   def process_batch(batch)
-@@ -356,6 +388,7 @@
-     end
-   end
  
-+
-   # ===─ WebSocket Handlers ==================================================================================
+ class SyslogParser(LogParser):
+@@ -202,7 +203,7 @@ class SyslogParser(LogParser):
  
-   def on_open
-@@ -411,6 +444,7 @@
-     end
-   end
+     SYSLOG_PATTERN = re.compile(
+         r'<\d+>\d+\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+\+\d{2}:\d{2})\s+(\S+)\s+(\S+)\s+-\s+(.*)'
+-    )
++    )
  
-+
-   # ===─ Helpers =============================================================================================
+     def parse(self, line: str) -> Optional[Dict[str, Any]]:
+         match = self.SYSLOG_PATTERN.match(line)
+@@ -218,7 +219,7 @@ def parse(self, line: str) -> Optional[Dict[str, Any]]:
+             "timestamp": timestamp,
+             "level": self.extract_level(line),
+             "service": service,
+-            "message": message,
++            "message": message,
+             "raw": line,
+         }
  
-   def generate_subscription_id
-@@ -431,6 +465,7 @@
-   end
- end
+@@ -227,7 +228,7 @@ class LogAggregator:
+     """Aggregates logs from multiple sources and formats."""
  
-+
- # ===─ Sinatra API ==========================================================================================
+     PARSERS = {
+-        'json': JSONLogParser(),
++        'json': JSONLogParser(),
+         'text': TextLogParser(),
+         'nginx': NginxLogParser(),
+         'syslog': SyslogParser(),
+@@ -236,7 +237,7 @@ class LogAggregator:
+     def __init__(self):
+         self.entries: List[Dict[str, Any]] = []
  
- class MarketStreamAPI < Sinatra::Base
-@@ -478,6 +513,7 @@
-   end
- end
+-    def detect_format(self, line: str) -> str:
++    def detect_format(self, line: str) -> str:
+         """Detect the log format of a line."""
+         if line.startswith('{'):
+             return 'json'
+@@ -248,7 +249,7 @@ def detect_format(self, line: str) -> str:
+             return 'text'
  
-+
- # ===─ CLI Entrypoint =======================================================================================
- 
- if __FILE__ == $0
-@@ -496,6 +532,7 @@
-     stream = MarketStream.new
-     stream.start
-     MarketStreamAPI.set :stream, stream
-+    at_exit { stream.shutdown! }
-     MarketStreamAPI.run! host: Constants::API_HOST, port: Constants::API_PORT
-   when 'stop'
-     puts "MarketStream stop not implemented. Use kill -9 like a civilized person."
---- /dev/null
-+++ b/v2/lib/ring_buffer.rb
-@@ -0,0 +1,95 @@
-+# frozen_string_literal: true
-+
-+# RingBuffer - A bounded, thread-safe ring buffer for batch processing.
-+#
-+# Throughput/backpressure behavior:
-+# - push: O(1). If the buffer is full, the oldest item is dropped (overwrite).
-+# - pop:  O(1). Blocks until an item is available or timeout.
-+# - Thread-safe via Mutex + ConditionVariable.
-+# - Designed for high-throughput tick batching where unbounded growth is fatal.
-+# - Backpressure: oldest batch dropped on overflow, so consumers always get the
-+#   most recent data. This is preferable to unbounded memory growth or blocking
-+#   producers in a market data context.
-+
-+class RingBuffer
-+  class ClosedError < StandardError; end
-+
-+  # @param capacity [Integer] Maximum number of items in the buffer.
-+  def initialize(capacity)
-+    raise ArgumentError, 'capacity must be positive' unless capacity.is_a?(Integer) && capacity > 0
-+    @capacity = capacity
-+    @buffer = []
-+    @mutex = Mutex.new
-+    @cond = ConditionVariable.new
-+    @closed = false
-+  end
-+
-+  # Push an item into the ring buffer.
-+  # If the buffer is full, the oldest item is dropped.
-+  # Raises ClosedError if the buffer
+     def parse_line(self
